@@ -1,0 +1,35 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets and credentials
+client_secret_*.json
+token.json
+.env
+
+# Node
+node_modules/
+
+# ADK
+.adk/
+app_tmp*/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Deployment metadata
+deployment_metadata.json
+
+# Lock files
+uv.lock

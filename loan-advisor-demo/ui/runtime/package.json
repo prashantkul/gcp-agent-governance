@@ -1,0 +1,21 @@
+{
+  "name": "loan-advisor-copilotkit-runtime",
+  "version": "1.0.0",
+  "description": "CopilotKit runtime service bridging the React frontend to the AG-UI backend",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@copilotkit/runtime": "^1.9.3",
+    "@ag-ui/client": "^0.0.17",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

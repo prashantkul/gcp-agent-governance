@@ -1,0 +1,13 @@
+[project]
+name = "loan-advisor-ui-backend"
+version = "0.1.0"
+description = "AG-UI backend bridge for the Loan Advisor ADK agent"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "ag-ui-protocol>=0.1.8",
+    "fastapi>=0.116.1",
+    "google-adk>=1.7.0",
+    "pydantic>=2.11.7",
+    "uvicorn>=0.35.0",
+    "python-dotenv>=1.1.0",
+]
