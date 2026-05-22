@@ -2,6 +2,8 @@
 
 An end-to-end Agent Governance demo on Google Cloud, showcasing how enterprises can deploy AI agents with full security, identity, and data governance controls.
 
+> **Full setup instructions:** [SETUP.md](SETUP.md)
+
 ## Architecture
 
 ```mermaid
@@ -60,20 +62,33 @@ block-beta
 │  React Chat  │────▸│ CopilotKit      │────▸│ AG-UI Backend    │
 │  (3000)      │     │ Runtime (4002)  │     │ FastAPI (8888)   │
 └──────────────┘     └─────────────────┘     └────────┬─────────┘
-                                                      │ SSE Stream
+                                                      │
+                                              ┌───────▼──────────┐
+                                              │  Agent Gateway    │
+                                              │  (Cloud LB)       │
+                                              │                   │
+                                              │  ┌─────────────┐ │
+                                              │  │ Model Armor  │ │
+                                              │  │ AuthZ Ext.   │ │
+                                              │  └──────┬──────┘ │
+                                              │    Request:       │
+                                              │    Prompt inject. │
+                                              │    Response: PII  │
+                                              └───────┬──────────┘
+                                                      │
                                               ┌───────▼──────────┐
                                               │  Agent Engine     │
                                               │  ADK 1.32 Agent   │
                                               │  Gemini 2.5 Flash │
-                                              └──┬─────┬──────┬──┘
-                                                 │     │      │
-                              ┌──────────────────┘     │      └──────────────────┐
-                              ▼                        ▼                         ▼
-                    ┌──────────────────┐   ┌────────────────────┐   ┌────────────────────┐
-                    │ Agent Identity   │   │ BigQuery MCP       │   │ Model Armor        │
-                    │ SPIFFE + OAuth   │   │ User's Delegated   │   │ PII Detection      │
-                    │ IAM Connectors   │   │ Credentials        │   │ Content Safety     │
-                    └──────────────────┘   └────────────────────┘   └────────────────────┘
+                                              └──┬──────────────┬─┘
+                                                 │              │
+                              ┌──────────────────┘              └──────────────────┐
+                              ▼                                                    ▼
+                    ┌──────────────────┐                               ┌────────────────────┐
+                    │ Agent Identity   │                               │ BigQuery MCP       │
+                    │ SPIFFE + OAuth   │                               │ User's Delegated   │
+                    │ IAM Connectors   │                               │ Credentials        │
+                    └──────────────────┘                               └────────────────────┘
 ```
 
 ## Governance Features
@@ -83,9 +98,9 @@ block-beta
 | **Agent Identity** | SPIFFE-based identity for the agent. Authenticates to IAM connectors for OAuth 3LO credential management. | Active |
 | **Auth Manager** | Manages user OAuth tokens via IAM connectors. Agent requests consent, user authenticates with Google, tokens stored in a Google-managed vault. | Active |
 | **BigQuery MCP** | Agent queries BigQuery using the user's own delegated OAuth token — not a service account. Data access follows the user's permissions. | Active |
-| **Model Armor** | Scans agent inputs/outputs for PII, hate speech, and unsafe content at the Agent Gateway level. | Preview |
+| **Model Armor** | Scans agent inputs/outputs for PII, hate speech, and unsafe content. Enforced via Agent Gateway authorization extension — no code changes needed. | Active |
+| **Agent Gateway** | Cloud Load Balancing with Model Armor authorization extension. Scans requests for prompt injection and responses for PII before they reach the client. | Active |
 | **Agent Registry** | Registers the agent as an A2A-discoverable service with capability metadata. | Preview |
-| **Agent Gateway** | Manages traffic, enforces policies, and routes requests to agent backends. | Preview |
 
 ## Demo Scenario
 
