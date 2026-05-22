@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { CopilotKit, useCopilotChat } from "@copilotkit/react-core";
 import "@copilotkit/react-ui/styles.css";
 import { CopilotChat } from "@copilotkit/react-ui";
@@ -124,6 +124,18 @@ function App() {
     process.env.REACT_APP_COPILOT_RUNTIME_URL ||
     "http://localhost:4002/api/copilotkit";
   const agent = process.env.REACT_APP_COPILOT_AGENT || "loan_advisor";
+  const [armorRequest, setArmorRequest] = useState(false);
+  const [armorResponse, setArmorResponse] = useState(false);
+
+  const toggleArmor = useCallback(async (field, value) => {
+    try {
+      await fetch("http://localhost:8888/model-armor/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [field]: value }),
+      });
+    } catch (e) { /* ignore */ }
+  }, []);
 
   return (
     <CopilotKit agent={agent} runtimeUrl={runtimeUrl}>
@@ -356,6 +368,55 @@ function App() {
                   >
                     {g.status}
                   </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Model Armor Toggles */}
+            <div
+              style={{
+                marginTop: 16,
+                padding: "12px",
+                borderRadius: 12,
+                background: "#fff",
+                border: "1px solid #e1e3e1",
+              }}
+            >
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#5f6368", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 10 }}>
+                Model Armor Policies
+              </div>
+              {[
+                { label: "Request Scanning", desc: "Prompt injection detection", field: "request", value: armorRequest, setter: setArmorRequest, icon: "login" },
+                { label: "Response Scanning", desc: "PII / unsafe content", field: "response", value: armorResponse, setter: setArmorResponse, icon: "logout" },
+              ].map((t) => (
+                <div key={t.field} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}>
+                  <span className="material-icons-outlined" style={{ fontSize: 16, color: t.value ? "#34a853" : "#9aa0a6" }}>{t.icon}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#1f1f1f" }}>{t.label}</div>
+                    <div style={{ fontSize: 10, color: "#5f6368" }}>{t.desc}</div>
+                  </div>
+                  <label style={{ position: "relative", width: 36, height: 20, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={t.value}
+                      onChange={(e) => {
+                        t.setter(e.target.checked);
+                        toggleArmor(t.field, e.target.checked);
+                      }}
+                      style={{ display: "none" }}
+                    />
+                    <span style={{
+                      position: "absolute", inset: 0, borderRadius: 10,
+                      background: t.value ? "#34a853" : "#dadce0",
+                      transition: "background 0.2s",
+                    }} />
+                    <span style={{
+                      position: "absolute", top: 2, left: t.value ? 18 : 2,
+                      width: 16, height: 16, borderRadius: "50%",
+                      background: "#fff", boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                      transition: "left 0.2s",
+                    }} />
+                  </label>
                 </div>
               ))}
             </div>

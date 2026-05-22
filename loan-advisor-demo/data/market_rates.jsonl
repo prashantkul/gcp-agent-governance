@@ -1,0 +1,9 @@
+{"source":"freddie_mac","rate_type":"30_year_fixed","loan_category":"MORTGAGE","rate_percent":6.65,"effective_date":"2026-05-22","region":"national","description":"Freddie Mac Primary Mortgage Market Survey - 30yr fixed"}
+{"source":"freddie_mac","rate_type":"15_year_fixed","loan_category":"MORTGAGE","rate_percent":5.89,"effective_date":"2026-05-22","region":"national","description":"Freddie Mac Primary Mortgage Market Survey - 15yr fixed"}
+{"source":"freddie_mac","rate_type":"5_1_arm","loan_category":"MORTGAGE","rate_percent":5.42,"effective_date":"2026-05-22","region":"national","description":"Freddie Mac Primary Mortgage Market Survey - 5/1 ARM"}
+{"source":"federal_reserve","rate_type":"prime_rate","loan_category":"REFERENCE","rate_percent":8.50,"effective_date":"2026-05-22","region":"national","description":"Federal Reserve H.15 Selected Interest Rates - Prime"}
+{"source":"federal_reserve","rate_type":"federal_funds","loan_category":"REFERENCE","rate_percent":5.25,"effective_date":"2026-05-22","region":"national","description":"Federal Reserve effective federal funds rate"}
+{"source":"bankrate","rate_type":"heloc_avg","loan_category":"HELOC","rate_percent":8.15,"effective_date":"2026-05-22","region":"national","description":"Bankrate national HELOC average rate"}
+{"source":"bankrate","rate_type":"auto_new_avg","loan_category":"AUTO","rate_percent":6.35,"effective_date":"2026-05-22","region":"national","description":"Bankrate national new auto loan average"}
+{"source":"bankrate","rate_type":"auto_used_avg","loan_category":"AUTO","rate_percent":7.45,"effective_date":"2026-05-22","region":"national","description":"Bankrate national used auto loan average"}
+{"source":"bankrate","rate_type":"personal_unsecured_avg","loan_category":"PERSONAL","rate_percent":11.50,"effective_date":"2026-05-22","region":"national","description":"Bankrate national personal loan average"}

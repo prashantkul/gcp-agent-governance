@@ -35,8 +35,14 @@ AGENT_ENGINE_ID = os.environ.get(
 )
 AGENT_ENGINE_BASE = f"https://us-central1-aiplatform.googleapis.com/v1/{AGENT_ENGINE_ID}"
 GCP_PROJECT = "privacy-ml-lab1"
+MODEL_ARMOR_TEMPLATE = os.environ.get(
+    "MODEL_ARMOR_TEMPLATE",
+    "projects/privacy-ml-lab1/locations/us-central1/templates/loan-advisor-armor",
+)
+MODEL_ARMOR_BASE = f"https://modelarmor.us-central1.rep.googleapis.com/v1/{MODEL_ARMOR_TEMPLATE}"
 
 auth_consent_store: dict[str, dict] = {}
+model_armor_config: dict[str, bool] = {"request": False, "response": False}
 
 
 def _get_access_token() -> str:
@@ -69,6 +75,61 @@ async def _ensure_session(client: httpx.AsyncClient, headers: dict, user_id: str
     return session_id
 
 
+async def _sanitize_user_prompt(text: str, token: str) -> dict | None:
+    """Call Model Armor to scan user input. Returns match info or None if clean."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"{MODEL_ARMOR_BASE}:sanitizeUserPrompt",
+            headers=_auth_headers(token),
+            json={"userPromptData": {"text": text}},
+        )
+        if resp.status_code != 200:
+            return None
+        result = resp.json().get("sanitizationResult", {})
+        if result.get("filterMatchState") == "MATCH_FOUND":
+            return result.get("filterResults", {})
+    return None
+
+
+async def _sanitize_model_response(text: str, token: str) -> dict | None:
+    """Call Model Armor to scan agent output. Returns match info or None if clean."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"{MODEL_ARMOR_BASE}:sanitizeModelResponse",
+            headers=_auth_headers(token),
+            json={"modelResponseData": {"text": text}},
+        )
+        if resp.status_code != 200:
+            return None
+        result = resp.json().get("sanitizationResult", {})
+        if result.get("filterMatchState") == "MATCH_FOUND":
+            return result.get("filterResults", {})
+    return None
+
+
+def _format_armor_findings(findings: dict) -> str:
+    """Format Model Armor findings into a readable message."""
+    issues = []
+    pi = findings.get("pi_and_jailbreak", {}).get("piAndJailbreakFilterResult", {})
+    if pi.get("matchState") == "MATCH_FOUND":
+        issues.append("Prompt injection / jailbreak attempt")
+
+    rai = findings.get("rai", {}).get("raiFilterResult", {})
+    if rai.get("matchState") == "MATCH_FOUND":
+        for category, detail in rai.get("raiFilterTypeResults", {}).items():
+            if detail.get("matchState") == "MATCH_FOUND":
+                issues.append(f"Unsafe content ({category.replace('_', ' ')})")
+
+    sdp = findings.get("sdp", {}).get("sdpFilterResult", {})
+    if sdp.get("matchState") == "MATCH_FOUND":
+        inspect = sdp.get("inspectResult", {})
+        for finding in inspect.get("findings", []):
+            info_type = finding.get("infoType", {}).get("name", "PII")
+            issues.append(f"Sensitive data detected ({info_type})")
+
+    return "; ".join(issues) if issues else "Policy violation detected"
+
+
 def create_app(config: ServerConfig = None) -> FastAPI:
     if config is None:
         config = ServerConfig()
@@ -89,6 +150,19 @@ def create_app(config: ServerConfig = None) -> FastAPI:
     )
 
     sessions: dict[str, str] = {}
+
+    @app.get("/model-armor/config")
+    async def get_armor_config():
+        return model_armor_config
+
+    @app.post("/model-armor/config")
+    async def set_armor_config(request: Request):
+        body = await request.json()
+        if "request" in body:
+            model_armor_config["request"] = bool(body["request"])
+        if "response" in body:
+            model_armor_config["response"] = bool(body["response"])
+        return model_armor_config
 
     @app.post(EndpointConfig.AGENT_PATH)
     async def agent_endpoint(request: Request):
@@ -128,6 +202,26 @@ def create_app(config: ServerConfig = None) -> FastAPI:
 
         token = _get_access_token()
         headers = _auth_headers(token)
+
+        # Model Armor: scan user prompt if enabled
+        if model_armor_config["request"] and user_message and not is_auth_resume:
+            try:
+                findings = await _sanitize_user_prompt(user_message, token)
+                if findings:
+                    description = _format_armor_findings(findings)
+                    async def blocked_stream():
+                        yield encoder.encode(RunStartedEvent(type=EventType.RUN_STARTED, thread_id=thread_id, run_id=run_id))
+                        msg_id = str(uuid.uuid4())
+                        yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
+                        yield encoder.encode(TextMessageContentEvent(
+                            type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id,
+                            delta=f"🛡️ **Model Armor — Request Blocked**\n\n{description}\n\nYour message was flagged by Model Armor security policies and was not forwarded to the agent.",
+                        ))
+                        yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
+                        yield encoder.encode(RunFinishedEvent(type=EventType.RUN_FINISHED, thread_id=thread_id, run_id=run_id))
+                    return StreamingResponse(blocked_stream(), media_type=encoder.get_content_type())
+            except Exception as e:
+                logger.warning(f"Model Armor request scan failed: {e}")
 
         async def stream_events():
             yield encoder.encode(RunStartedEvent(type=EventType.RUN_STARTED, thread_id=thread_id, run_id=run_id))
@@ -270,9 +364,26 @@ def create_app(config: ServerConfig = None) -> FastAPI:
                                     yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=err_msg_id))
 
                     if full_text:
-                        yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
-                        yield encoder.encode(TextMessageContentEvent(type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id, delta=full_text))
-                        yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
+                        # Model Armor: scan response if enabled
+                        if model_armor_config["response"]:
+                            try:
+                                resp_findings = await _sanitize_model_response(full_text, token)
+                                if resp_findings:
+                                    description = _format_armor_findings(resp_findings)
+                                    yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
+                                    yield encoder.encode(TextMessageContentEvent(
+                                        type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id,
+                                        delta=f"🛡️ **Model Armor — Response Blocked**\n\n{description}\n\nThe agent's response was flagged by Model Armor and has been redacted to protect sensitive information.",
+                                    ))
+                                    yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
+                                    full_text = ""
+                            except Exception as e:
+                                logger.warning(f"Model Armor response scan failed: {e}")
+
+                        if full_text:
+                            yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
+                            yield encoder.encode(TextMessageContentEvent(type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id, delta=full_text))
+                            yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
 
             except httpx.HTTPStatusError as e:
                 logger.error(f"Agent Engine error: {e.response.text[:300]}")

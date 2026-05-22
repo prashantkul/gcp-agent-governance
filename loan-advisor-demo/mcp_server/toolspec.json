@@ -1,0 +1,198 @@
+{
+  "tools": [
+    {
+      "name": "list_loan_products",
+      "description": "List all available loan products from Acme Financial Services. Returns details such as product name, type, interest rate, term, and eligibility criteria.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "annotations": {
+        "title": "List Loan Products",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_customer_profile",
+      "description": "Retrieve a customer profile by customer ID. PII protection is handled by Model Armor at the gateway level.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "description": "The unique identifier for the customer (e.g. CUST-001)"
+          }
+        },
+        "required": ["customer_id"]
+      },
+      "annotations": {
+        "title": "Get Customer Profile",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "check_market_rates",
+      "description": "Fetch current market benchmark rates from Freddie Mac, Federal Reserve, and Bankrate. Compares against Acme internal rates. Subject to Agent Gateway rate-limiting and access policies.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "loan_type": {
+            "type": "string",
+            "description": "Filter by category: MORTGAGE, AUTO, PERSONAL, HELOC, REFERENCE, or all",
+            "default": "all"
+          }
+        },
+        "required": []
+      },
+      "annotations": {
+        "title": "Check Market Rates",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "run_credit_check",
+      "description": "Pull a detailed credit report for a customer. SENSITIVE: Returns PII including SSN and date of birth. Model Armor at the Agent Gateway redacts PII before delivery.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "description": "The unique identifier for the customer (e.g. CUST-001)"
+          }
+        },
+        "required": ["customer_id"]
+      },
+      "annotations": {
+        "title": "Run Credit Check",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "assess_fraud_risk",
+      "description": "Run fraud risk assessment on a loan application. Analyzes against known fraud patterns and returns a scored risk profile. All calls are audit-logged.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "application_id": {
+            "type": "string",
+            "description": "The loan application ID to assess (e.g. APP-2026-001)"
+          }
+        },
+        "required": ["application_id"]
+      },
+      "annotations": {
+        "title": "Assess Fraud Risk",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "check_regulatory_compliance",
+      "description": "Validate a loan against federal and state regulatory requirements including TILA, HOEPA, Qualified Mortgage rules, and state usury limits.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "loan_type": {
+            "type": "string",
+            "description": "Type of loan: MORTGAGE, AUTO, PERSONAL, or HELOC"
+          },
+          "loan_amount": {
+            "type": "number",
+            "description": "The loan amount in USD"
+          },
+          "annual_rate_percent": {
+            "type": "number",
+            "description": "The annual interest rate as a percentage (e.g. 6.5)"
+          },
+          "loan_term_years": {
+            "type": "integer",
+            "description": "The loan term in years"
+          },
+          "state": {
+            "type": "string",
+            "description": "Two-letter state code (e.g. CA, TX)"
+          }
+        },
+        "required": ["loan_type", "loan_amount", "annual_rate_percent", "loan_term_years", "state"]
+      },
+      "annotations": {
+        "title": "Check Regulatory Compliance",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "update_application_status",
+      "description": "Update the status of a loan application. WRITE OPERATION: Agent Gateway enforces stricter access controls. All mutations are audit-logged.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "application_id": {
+            "type": "string",
+            "description": "The application ID to update (e.g. APP-2026-004)"
+          },
+          "new_status": {
+            "type": "string",
+            "description": "New status: APPROVED, DENIED, UNDER_REVIEW, WITHDRAWN, or PENDING_DOCS"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Optional notes about the status change",
+            "default": ""
+          }
+        },
+        "required": ["application_id", "new_status"]
+      },
+      "annotations": {
+        "title": "Update Application Status",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_property_valuation",
+      "description": "Look up property valuation from external assessment service. Returns estimated market value, comparable sales, and confidence level. Cross-service authorization via Agent Identity required.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "zip_code": {
+            "type": "string",
+            "description": "The property ZIP code"
+          },
+          "address": {
+            "type": "string",
+            "description": "Optional street address for a more precise match",
+            "default": ""
+          }
+        },
+        "required": ["zip_code"]
+      },
+      "annotations": {
+        "title": "Get Property Valuation",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    }
+  ]
+}
