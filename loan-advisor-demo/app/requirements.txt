@@ -1,5 +1,6 @@
 google-cloud-aiplatform[agent_engines,adk]==1.151.0
 google-adk[agent-identity]==1.32.0
+mcp>=1.8.0
 httpx==0.28.1
 python-dotenv>=1.0.1
 urllib3>=2.0.0

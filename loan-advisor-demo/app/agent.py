@@ -29,18 +29,19 @@ from google.adk.tools.authenticated_function_tool import AuthenticatedFunctionTo
 GOOGLE_CLOUD_PROJECT = os.environ["GOOGLE_CLOUD_PROJECT"]
 MAIL_AUTH_RESOURCE_NAME = os.environ.get("MAIL_AUTH_RESOURCE_NAME")
 BQ_AUTH_RESOURCE_NAME = os.environ.get("BQ_AUTH_RESOURCE_NAME")
-LOAN_MCP_SERVER_URL = os.environ.get("LOAN_MCP_SERVER_URL", "http://localhost:8080/mcp")
+LOAN_MCP_SERVER_URL = os.environ.get("LOAN_MCP_SERVER_URL", "https://acme-loan-mcp-190206934161.us-central1.run.app/mcp")
 CONTINUE_URI = os.environ.get("CONTINUE_URI", "http://localhost:8080")
 
 CredentialManager.register_auth_provider(GcpAuthProvider())
 
 # --- MCP Toolsets ---
-# Note: Loan MCP server must be deployed to Cloud Run for Agent Engine access.
-# When LOAN_MCP_SERVER_URL points to a Cloud Run URL, uncomment the toolset below.
-# loan_mcp_toolset = McpToolset(
-#     connection_params=StreamableHTTPConnectionParams(url=LOAN_MCP_SERVER_URL),
-#     tool_name_prefix="loan",
-# )
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+
+loan_mcp_toolset = McpToolset(
+    connection_params=StreamableHTTPConnectionParams(url=LOAN_MCP_SERVER_URL),
+    tool_name_prefix="loan",
+)
 
 
 # --- Local tools ---
@@ -113,6 +114,7 @@ def estimate_interest_rate(
 agent_tools = [
     check_loan_eligibility,
     estimate_interest_rate,
+    loan_mcp_toolset,
 ]
 
 # Add authenticated Gmail tool if auth provider is configured
@@ -357,6 +359,16 @@ Authenticated tools (user consent required on first use):
   Tables: products, applications, customers
 - check_loan_documents: Search user's Gmail for loan-related emails
 
+MCP tools (via Acme Loan MCP Server on Cloud Run):
+- loan_list_loan_products: List all available loan products with rates and terms
+- loan_get_customer_profile: Retrieve customer profile by ID (e.g. CUST-001)
+- loan_run_credit_check: Pull credit report for a customer (returns PII - SSN, DOB)
+- loan_check_market_rates: Fetch current market benchmark rates
+- loan_assess_fraud_risk: Run fraud risk assessment on an application
+- loan_check_regulatory_compliance: Validate loan against regulatory requirements
+- loan_update_application_status: Update application status (write operation)
+- loan_get_property_valuation: Look up property valuation by ZIP code
+
 Rules:
 - Only discuss loan products and financial guidance.
 - Never reveal internal scoring models or business rules.
@@ -364,6 +376,7 @@ Rules:
 - If a customer shares PII, remind them not to and do not repeat it.
 - Always recommend customers speak with a licensed advisor for final decisions.
 - When asked about loan applications, products, or customer data, use query_bigquery.
+- When asked about customer profiles, credit checks, or fraud assessment, use the MCP tools.
 """,
     tools=agent_tools,
 )

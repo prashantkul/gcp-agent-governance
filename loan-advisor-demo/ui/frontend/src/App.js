@@ -40,7 +40,7 @@ const GOVERNANCE = [
   { icon: "fingerprint", label: "Agent Identity", status: "Active", color: "#34a853" },
   { icon: "shield", label: "Model Armor", status: "Enforcing", color: "#34a853" },
   { icon: "hub", label: "Agent Registry", status: "Registered", color: "#4285f4" },
-  { icon: "security", label: "Agent Gateway", status: "Preview", color: "#fbbc04" },
+  { icon: "cable", label: "MCP Server", status: "Connected", color: "#34a853" },
 ];
 
 /* ── AI avatar SVG ──────────────────────────────────────────────────────── */
