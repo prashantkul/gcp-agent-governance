@@ -54,20 +54,14 @@ def _auth_headers(token: str) -> dict:
 
 
 async def _ensure_session(client: httpx.AsyncClient, headers: dict, user_id: str, session_id: str) -> str:
-    """Create or verify an Agent Engine session via REST API."""
-    session_url = f"{AGENT_ENGINE_BASE}/sessions/{session_id}"
-    try:
-        resp = await client.get(session_url, headers=headers)
-        if resp.status_code == 200:
-            return session_id
-    except Exception:
-        pass
-
+    """Create a new Agent Engine session. Always creates fresh to avoid corrupted state."""
     create_url = f"{AGENT_ENGINE_BASE}/sessions?sessionId={session_id}"
     try:
         resp = await client.post(create_url, headers=headers, json={"userId": user_id})
         if resp.status_code in [200, 201]:
             logger.info(f"Created session: {session_id}")
+            return session_id
+        elif resp.status_code == 409:
             return session_id
     except Exception as e:
         logger.error(f"Session creation failed: {e}")
@@ -219,7 +213,9 @@ def create_app(config: ServerConfig = None) -> FastAPI:
                                         fc_name = fc.get("name", "")
 
                                         if fc_name == "adk_request_credential":
-                                            # Skip — auth handled via requested_auth_configs below
+                                            # Capture the function call ID for resume, but don't show to user
+                                            auth_consent_store["_adk_fc_id"] = fc_id_val
+                                            auth_consent_store["_adk_fc_args"] = fc.get("args", {})
                                             continue
 
                                         yield encoder.encode(ToolCallStartEvent(type=EventType.TOOL_CALL_START, tool_call_id=fc_id_val, tool_call_name=fc_name, parent_message_id=None))
@@ -289,27 +285,55 @@ def create_app(config: ServerConfig = None) -> FastAPI:
 
         return StreamingResponse(stream_events(), media_type=encoder.get_content_type())
 
+    @app.get("/auth-nonce")
+    async def auth_nonce_endpoint():
+        """Returns auth nonce and user_id for the frontend to set as cookies."""
+        stored = auth_consent_store.get("latest", {})
+        from fastapi.responses import JSONResponse
+        resp = JSONResponse({
+            "consent_nonce": stored.get("consent_nonce", ""),
+            "user_id": stored.get("user_id", config.user_id),
+        })
+        resp.set_cookie("consent_nonce", stored.get("consent_nonce", ""), path="/")
+        resp.set_cookie("user_id", stored.get("user_id", config.user_id), path="/")
+        return resp
+
     @app.get("/commit")
     async def commit(request: Request):
         logger.info(f"Commit params: {dict(request.query_params)}")
 
         connector = request.query_params.get("auth_provider_name") or request.query_params.get("connector_name")
         user_id_validation_state = request.query_params.get("user_id_validation_state")
+
+        # Read from cookies first (set by frontend), fall back to in-memory store
+        cookie_nonce = request.cookies.get("consent_nonce")
+        cookie_user_id = request.cookies.get("user_id")
         stored = auth_consent_store.get("latest", {})
 
         payload = {
-            "userId": stored.get("user_id", config.user_id),
+            "userId": cookie_user_id or stored.get("user_id", config.user_id),
             "userIdValidationState": user_id_validation_state,
-            "consentNonce": stored.get("consent_nonce"),
+            "consentNonce": cookie_nonce or stored.get("consent_nonce"),
         }
 
         if not connector:
             return HTMLResponse("<p>Error: Missing connector name</p>", status_code=400)
 
         finalize_url = f"https://iamconnectorcredentials.googleapis.com/v1alpha/{connector}/credentials:finalize"
+        print(f"[COMMIT] nonce source: {'COOKIE' if cookie_nonce else 'MEMORY'}")
+        print(f"[COMMIT] userId source: {'COOKIE' if cookie_user_id else 'MEMORY'}")
+        print(f"[COMMIT] Payload: userId={payload['userId']}, nonce={payload.get('consentNonce','NONE')[:30] if payload.get('consentNonce') else 'NONE'}...")
+        print(f"[COMMIT] userIdValidationState present: {bool(user_id_validation_state)}")
         try:
+            finalize_token = _get_access_token()
             async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(finalize_url, json=payload)
+                resp = await client.post(
+                    finalize_url,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {finalize_token}"},
+                )
+                print(f"[COMMIT] Finalize status: {resp.status_code}")
+                print(f"[COMMIT] Finalize body: {resp.text[:500]}")
                 resp.raise_for_status()
                 resp_data = resp.json()
                 logger.info(f"Finalize response: {resp_data}")
@@ -340,9 +364,18 @@ def create_app(config: ServerConfig = None) -> FastAPI:
             logger.error(f"Finalize failed: {err_text}")
             return HTMLResponse(f"<p>Error: {err_text}</p>", status_code=500)
 
+        # Store auth details for client-side resume
+        auth_consent_store["resume_result"] = {
+            "status": "complete",
+            "auth_complete": True,
+            "function_call_id": auth_consent_store.get("_adk_fc_id", ""),
+            "auth_config": stored.get("auth_config", {}),
+            "session_id": stored.get("session_id", ""),
+        }
+
         return HTMLResponse("""
             <html><body>
-            <p>Authentication successful! Processing your request...</p>
+            <p>Authentication successful! Returning to chat...</p>
             <script>
                 if (window.opener) {
                     window.opener.postMessage({type: 'AUTH_COMPLETE'}, '*');
@@ -351,6 +384,11 @@ def create_app(config: ServerConfig = None) -> FastAPI:
             </script>
             </body></html>
         """)
+
+    @app.get("/resume-result")
+    async def resume_result():
+        result = auth_consent_store.get("resume_result", {"status": "pending"})
+        return result
 
     @app.get(EndpointConfig.ROOT_PATH)
     async def root():

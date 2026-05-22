@@ -1,4 +1,14 @@
 import logging
+import os
+import sys
+
+# Must run before ANY other imports — Agent Engine injects pyopenssl which
+# breaks SSL contexts used by the IAM connector credentials client.
+try:
+    import urllib3.contrib.pyopenssl
+    urllib3.contrib.pyopenssl.extract_from_urllib3()
+except Exception:
+    pass
 
 from dotenv import load_dotenv
 from vertexai.agent_engines.templates.adk import AdkApp

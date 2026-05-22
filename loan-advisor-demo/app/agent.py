@@ -299,8 +299,8 @@ if BQ_AUTH_RESOURCE_NAME:
                 "https://www.googleapis.com/auth/bigquery",
                 "https://www.googleapis.com/auth/bigquery.readonly",
                 "openid",
-                "email",
-                "profile",
+                "https://www.googleapis.com/auth/userinfo.email",
+                "https://www.googleapis.com/auth/userinfo.profile",
             ],
             continue_uri=CONTINUE_URI,
         )

@@ -75,35 +75,43 @@ function AIAvatar({ size = 36 }) {
 
 function AuthResumeListener() {
   const { appendMessage } = useCopilotChat();
-  const polling = useRef(false);
+  const resuming = useRef(false);
+  const cookiesSet = useRef(false);
 
   useEffect(() => {
-    const handler = async (event) => {
-      if (event.data?.type !== "AUTH_COMPLETE" || polling.current) return;
-      polling.current = true;
-
-      // Poll for resume result
-      for (let i = 0; i < 60; i++) {
-        try {
-          const resp = await fetch("http://localhost:8888/resume-result");
-          const data = await resp.json();
-          if (data.status === "complete" && data.result) {
-            appendMessage({
-              id: Date.now().toString(),
-              role: "assistant",
-              content: data.result,
-            });
-            polling.current = false;
-            return;
-          }
-        } catch (e) { /* ignore */ }
-        await new Promise((r) => setTimeout(r, 1000));
+    // Watch for auth links in the DOM and set cookies when one appears
+    const observer = new MutationObserver(() => {
+      if (cookiesSet.current) return;
+      const authLink = document.querySelector('a[href*="accounts.google.com"]');
+      if (authLink) {
+        cookiesSet.current = true;
+        fetch("http://localhost:8888/auth-nonce", { credentials: "include" })
+          .then(() => console.log("Auth cookies set"))
+          .catch(() => {});
       }
-      polling.current = false;
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    const handler = async (event) => {
+      if (event.data?.type !== "AUTH_COMPLETE" || resuming.current) return;
+      resuming.current = true;
+      cookiesSet.current = false;
+
+      appendMessage({
+        id: `auth-ok-${Date.now()}`,
+        role: "assistant",
+        content:
+          "✅ **Authorization successful!** Your credentials have been securely stored via Agent Identity.\n\nPlease repeat your request and I'll access your data.",
+      });
+
+      resuming.current = false;
     };
 
     window.addEventListener("message", handler);
-    return () => window.removeEventListener("message", handler);
+    return () => {
+      window.removeEventListener("message", handler);
+      observer.disconnect();
+    };
   }, [appendMessage]);
 
   return null;
