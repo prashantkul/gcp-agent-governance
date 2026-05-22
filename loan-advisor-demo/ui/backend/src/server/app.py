@@ -91,8 +91,8 @@ async def _sanitize_user_prompt(text: str, token: str) -> dict | None:
     return None
 
 
-async def _sanitize_model_response(text: str, token: str) -> dict | None:
-    """Call Model Armor to scan agent output. Returns full filter results."""
+async def _sanitize_model_response(text: str, token: str) -> tuple[dict | None, str | None]:
+    """Call Model Armor to scan agent output. Returns (filter_results, redacted_text)."""
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"{MODEL_ARMOR_BASE}:sanitizeModelResponse",
@@ -100,11 +100,13 @@ async def _sanitize_model_response(text: str, token: str) -> dict | None:
             json={"modelResponseData": {"text": text}},
         )
         if resp.status_code != 200:
-            return None
+            return None, None
         result = resp.json().get("sanitizationResult", {})
         if result.get("filterMatchState") == "MATCH_FOUND":
-            return result.get("filterResults", {})
-    return None
+            filters = result.get("filterResults", {})
+            redacted = filters.get("sdp", {}).get("sdpFilterResult", {}).get("deidentifyResult", {}).get("data", {}).get("text")
+            return filters, redacted
+    return None, None
 
 
 def _classify_armor_findings(findings: dict) -> tuple[bool, str]:
@@ -381,14 +383,16 @@ def create_app(config: ServerConfig = None) -> FastAPI:
                         resp_armor_note = ""
                         if model_armor_config["response"]:
                             try:
-                                resp_findings = await _sanitize_model_response(full_text, token)
+                                resp_findings, redacted_text = await _sanitize_model_response(full_text, token)
                                 if resp_findings:
                                     should_block, description = _classify_armor_findings(resp_findings)
-                                    if should_block:
+                                    if should_block and redacted_text:
+                                        full_text = f"🛡️ **Model Armor — PII Redacted**\n\n{description}\n\n---\n\n{redacted_text}"
+                                    elif should_block:
                                         yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
                                         yield encoder.encode(TextMessageContentEvent(
                                             type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id,
-                                            delta=f"🛡️ **Model Armor — Response Blocked**\n\n{description}\n\nThe agent's response was flagged by Model Armor and has been redacted to protect sensitive information.",
+                                            delta=f"🛡️ **Model Armor — Response Blocked**\n\n{description}\n\nThe agent's response was flagged and redacted.",
                                         ))
                                         yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
                                         full_text = ""
