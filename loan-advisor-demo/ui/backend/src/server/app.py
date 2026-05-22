@@ -119,13 +119,18 @@ def _classify_armor_findings(findings: dict) -> tuple[bool, str]:
     if pi.get("matchState") == "MATCH_FOUND":
         block_reasons.append("Prompt injection / jailbreak attempt detected")
 
-    # SDP / PII → BLOCK
+    # SDP / PII → BLOCK (check both inspectResult and deidentifyResult)
     sdp = findings.get("sdp", {}).get("sdpFilterResult", {})
-    if sdp.get("matchState") == "MATCH_FOUND":
-        pii_types = []
-        for finding in sdp.get("inspectResult", {}).get("findings", []):
-            pii_types.append(finding.get("infoType", {}).get("name", "PII"))
-        block_reasons.append(f"Sensitive data detected ({', '.join(pii_types)})" if pii_types else "Sensitive data detected")
+    inspect = sdp.get("inspectResult", {})
+    deidentify = sdp.get("deidentifyResult", {})
+    sdp_match = inspect.get("matchState") == "MATCH_FOUND" or deidentify.get("matchState") == "MATCH_FOUND"
+    if sdp_match:
+        pii_types = deidentify.get("infoTypes", [])
+        if not pii_types:
+            for finding in inspect.get("findings", []):
+                pii_types.append(finding.get("infoType", {}).get("name", "PII"))
+        label = ", ".join(pii_types) if pii_types else "PII"
+        block_reasons.append(f"Sensitive data detected ({label})")
 
     # RAI filters → WARN only (too many false positives at low confidence)
     rai = findings.get("rai", {}).get("raiFilterResult", {})
