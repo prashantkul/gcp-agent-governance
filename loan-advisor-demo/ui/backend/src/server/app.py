@@ -76,7 +76,7 @@ async def _ensure_session(client: httpx.AsyncClient, headers: dict, user_id: str
 
 
 async def _sanitize_user_prompt(text: str, token: str) -> dict | None:
-    """Call Model Armor to scan user input. Returns match info or None if clean."""
+    """Call Model Armor to scan user input. Returns full filter results."""
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"{MODEL_ARMOR_BASE}:sanitizeUserPrompt",
@@ -92,7 +92,7 @@ async def _sanitize_user_prompt(text: str, token: str) -> dict | None:
 
 
 async def _sanitize_model_response(text: str, token: str) -> dict | None:
-    """Call Model Armor to scan agent output. Returns match info or None if clean."""
+    """Call Model Armor to scan agent output. Returns full filter results."""
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"{MODEL_ARMOR_BASE}:sanitizeModelResponse",
@@ -107,27 +107,37 @@ async def _sanitize_model_response(text: str, token: str) -> dict | None:
     return None
 
 
-def _format_armor_findings(findings: dict) -> str:
-    """Format Model Armor findings into a readable message."""
-    issues = []
+def _classify_armor_findings(findings: dict) -> tuple[bool, str]:
+    """Classify findings into block vs warn. Returns (should_block, message)."""
+    block_reasons = []
+    warn_reasons = []
+
+    # Prompt injection / jailbreak → BLOCK
     pi = findings.get("pi_and_jailbreak", {}).get("piAndJailbreakFilterResult", {})
     if pi.get("matchState") == "MATCH_FOUND":
-        issues.append("Prompt injection / jailbreak attempt")
+        block_reasons.append("Prompt injection / jailbreak attempt detected")
 
+    # SDP / PII → BLOCK
+    sdp = findings.get("sdp", {}).get("sdpFilterResult", {})
+    if sdp.get("matchState") == "MATCH_FOUND":
+        pii_types = []
+        for finding in sdp.get("inspectResult", {}).get("findings", []):
+            pii_types.append(finding.get("infoType", {}).get("name", "PII"))
+        block_reasons.append(f"Sensitive data detected ({', '.join(pii_types)})" if pii_types else "Sensitive data detected")
+
+    # RAI filters → WARN only (too many false positives at low confidence)
     rai = findings.get("rai", {}).get("raiFilterResult", {})
     if rai.get("matchState") == "MATCH_FOUND":
         for category, detail in rai.get("raiFilterTypeResults", {}).items():
             if detail.get("matchState") == "MATCH_FOUND":
-                issues.append(f"Unsafe content ({category.replace('_', ' ')})")
+                warn_reasons.append(category.replace("_", " "))
 
-    sdp = findings.get("sdp", {}).get("sdpFilterResult", {})
-    if sdp.get("matchState") == "MATCH_FOUND":
-        inspect = sdp.get("inspectResult", {})
-        for finding in inspect.get("findings", []):
-            info_type = finding.get("infoType", {}).get("name", "PII")
-            issues.append(f"Sensitive data detected ({info_type})")
-
-    return "; ".join(issues) if issues else "Policy violation detected"
+    should_block = len(block_reasons) > 0
+    if should_block:
+        return True, "; ".join(block_reasons)
+    elif warn_reasons:
+        return False, f"RAI advisory: {', '.join(warn_reasons)}"
+    return False, ""
 
 
 def create_app(config: ServerConfig = None) -> FastAPI:
@@ -204,22 +214,26 @@ def create_app(config: ServerConfig = None) -> FastAPI:
         headers = _auth_headers(token)
 
         # Model Armor: scan user prompt if enabled
+        armor_warning = ""
         if model_armor_config["request"] and user_message and not is_auth_resume:
             try:
                 findings = await _sanitize_user_prompt(user_message, token)
                 if findings:
-                    description = _format_armor_findings(findings)
-                    async def blocked_stream():
-                        yield encoder.encode(RunStartedEvent(type=EventType.RUN_STARTED, thread_id=thread_id, run_id=run_id))
-                        msg_id = str(uuid.uuid4())
-                        yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
-                        yield encoder.encode(TextMessageContentEvent(
-                            type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id,
-                            delta=f"🛡️ **Model Armor — Request Blocked**\n\n{description}\n\nYour message was flagged by Model Armor security policies and was not forwarded to the agent.",
-                        ))
-                        yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
-                        yield encoder.encode(RunFinishedEvent(type=EventType.RUN_FINISHED, thread_id=thread_id, run_id=run_id))
-                    return StreamingResponse(blocked_stream(), media_type=encoder.get_content_type())
+                    should_block, description = _classify_armor_findings(findings)
+                    if should_block:
+                        async def blocked_stream():
+                            yield encoder.encode(RunStartedEvent(type=EventType.RUN_STARTED, thread_id=thread_id, run_id=run_id))
+                            msg_id = str(uuid.uuid4())
+                            yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
+                            yield encoder.encode(TextMessageContentEvent(
+                                type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id,
+                                delta=f"🛡️ **Model Armor — Request Blocked**\n\n{description}\n\nYour message was flagged by Model Armor security policies and was not forwarded to the agent.",
+                            ))
+                            yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
+                            yield encoder.encode(RunFinishedEvent(type=EventType.RUN_FINISHED, thread_id=thread_id, run_id=run_id))
+                        return StreamingResponse(blocked_stream(), media_type=encoder.get_content_type())
+                    elif description:
+                        armor_warning = description
             except Exception as e:
                 logger.warning(f"Model Armor request scan failed: {e}")
 
@@ -364,25 +378,33 @@ def create_app(config: ServerConfig = None) -> FastAPI:
                                     yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=err_msg_id))
 
                     if full_text:
-                        # Model Armor: scan response if enabled
+                        resp_armor_note = ""
                         if model_armor_config["response"]:
                             try:
                                 resp_findings = await _sanitize_model_response(full_text, token)
                                 if resp_findings:
-                                    description = _format_armor_findings(resp_findings)
-                                    yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
-                                    yield encoder.encode(TextMessageContentEvent(
-                                        type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id,
-                                        delta=f"🛡️ **Model Armor — Response Blocked**\n\n{description}\n\nThe agent's response was flagged by Model Armor and has been redacted to protect sensitive information.",
-                                    ))
-                                    yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
-                                    full_text = ""
+                                    should_block, description = _classify_armor_findings(resp_findings)
+                                    if should_block:
+                                        yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
+                                        yield encoder.encode(TextMessageContentEvent(
+                                            type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id,
+                                            delta=f"🛡️ **Model Armor — Response Blocked**\n\n{description}\n\nThe agent's response was flagged by Model Armor and has been redacted to protect sensitive information.",
+                                        ))
+                                        yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
+                                        full_text = ""
+                                    elif description:
+                                        resp_armor_note = description
                             except Exception as e:
                                 logger.warning(f"Model Armor response scan failed: {e}")
 
                         if full_text:
+                            display_text = full_text
+                            if armor_warning:
+                                display_text += f"\n\n---\n⚠️ *Model Armor advisory (request): {armor_warning}*"
+                            if resp_armor_note:
+                                display_text += f"\n\n---\n⚠️ *Model Armor advisory (response): {resp_armor_note}*"
                             yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
-                            yield encoder.encode(TextMessageContentEvent(type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id, delta=full_text))
+                            yield encoder.encode(TextMessageContentEvent(type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id, delta=display_text))
                             yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
 
             except httpx.HTTPStatusError as e:
