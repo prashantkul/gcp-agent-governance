@@ -279,18 +279,35 @@ if BQ_AUTH_RESOURCE_NAME:
             except httpx.HTTPStatusError as e:
                 return f"Error calling BigQuery MCP: {e.response.text}"
 
-            # Parse SSE response
+            # Parse response — handle both direct JSON-RPC and SSE formats
+            import json as _json
             result_text = ""
-            for line in resp.text.split("\n"):
-                if line.startswith("data: "):
-                    import json
-                    data = json.loads(line[6:])
-                    result = data.get("result", {})
-                    for content in result.get("content", []):
-                        if content.get("type") == "text":
-                            result_text += content["text"] + "\n"
+            raw = resp.text.strip()
 
-            return result_text.strip() if result_text else "No results returned."
+            # Try direct JSON-RPC response first
+            try:
+                data = _json.loads(raw)
+                result = data.get("result", {})
+                for content in result.get("content", []):
+                    if content.get("type") == "text":
+                        result_text += content["text"] + "\n"
+            except _json.JSONDecodeError:
+                pass
+
+            # Fall back to SSE format
+            if not result_text:
+                for line in raw.split("\n"):
+                    if line.startswith("data: "):
+                        try:
+                            data = _json.loads(line[6:])
+                            result = data.get("result", {})
+                            for content in result.get("content", []):
+                                if content.get("type") == "text":
+                                    result_text += content["text"] + "\n"
+                        except _json.JSONDecodeError:
+                            pass
+
+            return result_text.strip() if result_text else f"No results. Raw response: {raw[:500]}"
 
     bq_auth_config = AuthConfig(
         auth_scheme=GcpAuthProviderScheme(
