@@ -1,64 +1,91 @@
-"""FastAPI application factory."""
+"""FastAPI application factory — proxies AG-UI requests to Agent Engine."""
 
-import sys
 import os
+import json
+import uuid
+import asyncio
 import logging
 
-from fastapi import FastAPI
+import httpx
+import google.auth
+import google.auth.transport.requests
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from adk_middleware import ADKAgent, AgentRegistry, add_adk_fastapi_endpoint
+from fastapi.responses import StreamingResponse, HTMLResponse
+from ag_ui.core import (
+    EventType,
+    RunStartedEvent,
+    RunFinishedEvent,
+    RunErrorEvent,
+    TextMessageStartEvent,
+    TextMessageContentEvent,
+    TextMessageEndEvent,
+    ToolCallStartEvent,
+    ToolCallArgsEvent,
+    ToolCallEndEvent,
+)
+from ag_ui.encoder import EventEncoder
 from .config import ServerConfig, EndpointConfig
 
 logger = logging.getLogger(__name__)
 
+AGENT_ENGINE_ID = os.environ.get(
+    "AGENT_ENGINE_ID",
+    "projects/190206934161/locations/us-central1/reasoningEngines/7506782047977865216",
+)
+AGENT_ENGINE_BASE = f"https://us-central1-aiplatform.googleapis.com/v1/{AGENT_ENGINE_ID}"
+GCP_PROJECT = "privacy-ml-lab1"
 
-def setup_agent_registry() -> None:
-    """Import and register the loan_advisor root_agent from the main app."""
-    # Add the project root to sys.path so we can import app.agent
-    project_root = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
-    )
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
-
-    from app.agent import root_agent
-
-    registry = AgentRegistry.get_instance()
-    registry.set_default_agent(root_agent)
-    registry.register_agent("agent", root_agent)
-    registry.register_agent("loan_advisor", root_agent)
-
-    logger.info(f"Registered loan_advisor agent: {root_agent.name}")
+auth_consent_store: dict[str, dict] = {}
 
 
-def create_adk_agent(config: ServerConfig) -> ADKAgent:
-    return ADKAgent(
-        app_name=config.app_name,
-        user_id=config.user_id,
-        session_timeout_seconds=config.session_timeout_seconds,
-        use_in_memory_services=config.use_in_memory_services,
-    )
+def _get_access_token() -> str:
+    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    creds.refresh(google.auth.transport.requests.Request())
+    return creds.token
+
+
+def _auth_headers(token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "x-goog-user-project": GCP_PROJECT,
+    }
+
+
+async def _ensure_session(client: httpx.AsyncClient, headers: dict, user_id: str, session_id: str) -> str:
+    """Create or verify an Agent Engine session via REST API."""
+    session_url = f"{AGENT_ENGINE_BASE}/sessions/{session_id}"
+    try:
+        resp = await client.get(session_url, headers=headers)
+        if resp.status_code == 200:
+            return session_id
+    except Exception:
+        pass
+
+    create_url = f"{AGENT_ENGINE_BASE}/sessions?sessionId={session_id}"
+    try:
+        resp = await client.post(create_url, headers=headers, json={"userId": user_id})
+        if resp.status_code in [200, 201]:
+            logger.info(f"Created session: {session_id}")
+            return session_id
+    except Exception as e:
+        logger.error(f"Session creation failed: {e}")
+
+    return session_id
 
 
 def create_app(config: ServerConfig = None) -> FastAPI:
     if config is None:
         config = ServerConfig()
 
-    setup_agent_registry()
-
-    adk_agent = create_adk_agent(config)
-
     app = FastAPI(
         title="Loan Advisor AG-UI Backend",
-        description="AG-UI protocol backend for the Loan Advisor ADK agent",
-        version="1.0.0",
+        description="Proxies AG-UI to Agent Engine",
+        version="2.0.0",
     )
 
-    cors_origins = (
-        config.cors_origins.split(",")
-        if config.cors_origins != "*"
-        else ["*"]
-    )
+    cors_origins = config.cors_origins.split(",") if config.cors_origins != "*" else ["*"]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
@@ -67,21 +94,272 @@ def create_app(config: ServerConfig = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Register the AG-UI endpoint
-    add_adk_fastapi_endpoint(app, adk_agent, path=EndpointConfig.AGENT_PATH)
+    sessions: dict[str, str] = {}
+
+    @app.post(EndpointConfig.AGENT_PATH)
+    async def agent_endpoint(request: Request):
+        """AG-UI endpoint — proxies to Agent Engine streamQuery."""
+        body = await request.json()
+        accept = request.headers.get("accept", "text/event-stream")
+        encoder = EventEncoder(accept=accept)
+
+        thread_id = body.get("threadId", str(uuid.uuid4()))
+        user_id = config.user_id
+        run_id = body.get("runId", str(uuid.uuid4()))
+
+        user_message = ""
+        messages = body.get("messages", [])
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    user_message = content
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            user_message = part["text"]
+                            break
+                        elif isinstance(part, str):
+                            user_message = part
+                            break
+                break
+
+        resume = body.get("resume", [])
+        is_auth_resume = len(resume) > 0
+
+        if not user_message and not is_auth_resume:
+            user_message = "Hello"
+
+        logger.info(f"User [{user_id}] thread [{thread_id}]: {user_message[:80]} (resume={is_auth_resume})")
+
+        token = _get_access_token()
+        headers = _auth_headers(token)
+
+        async def stream_events():
+            yield encoder.encode(RunStartedEvent(type=EventType.RUN_STARTED, thread_id=thread_id, run_id=run_id))
+
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    session_id = sessions.get(thread_id)
+                    if not session_id:
+                        session_id = await _ensure_session(client, headers, user_id, thread_id)
+                        sessions[thread_id] = session_id
+
+                    if is_auth_resume:
+                        stored = auth_consent_store.get("latest", {})
+                        fc_id = stored.get("function_call_id", "")
+                        auth_config = stored.get("auth_config", {})
+                        message_content = {
+                            "role": "user",
+                            "parts": [{
+                                "functionResponse": {
+                                    "id": fc_id,
+                                    "name": "adk_request_credential",
+                                    "response": auth_config,
+                                }
+                            }],
+                        }
+                    else:
+                        message_content = {
+                            "role": "user",
+                            "parts": [{"text": user_message}],
+                        }
+
+                    payload = {
+                        "input": {
+                            "session_id": session_id,
+                            "user_id": user_id,
+                            "message": message_content,
+                        }
+                    }
+
+                    full_text = ""
+                    msg_id = str(uuid.uuid4())
+
+                    async with client.stream(
+                        "POST",
+                        f"{AGENT_ENGINE_BASE}:streamQuery",
+                        headers=headers,
+                        json=payload,
+                    ) as resp:
+                        if resp.status_code != 200:
+                            err = await resp.aread()
+                            yield encoder.encode(RunErrorEvent(
+                                type=EventType.RUN_ERROR,
+                                message=f"Agent Engine error {resp.status_code}: {err.decode()[:200]}",
+                            ))
+                        else:
+                            async for line in resp.aiter_lines():
+                                if not line or not line.strip():
+                                    continue
+
+                                try:
+                                    event = json.loads(line)
+                                except json.JSONDecodeError:
+                                    logger.debug(f"Non-JSON line: {line[:100]}")
+                                    continue
+
+                                if not isinstance(event, dict):
+                                    continue
+
+                                logger.info(f"Event from AE: author={event.get('author')}, keys={list(event.get('content',{}).get('parts',[{}])[0].keys()) if event.get('content',{}).get('parts') else 'no-parts'}")
+
+                                author = event.get("author", "")
+                                if author == "user":
+                                    continue
+
+                                content = event.get("content", {})
+                                parts = content.get("parts", [])
+                                actions = event.get("actions", {})
+
+                                for part in parts:
+                                    fc = part.get("functionCall") or part.get("function_call")
+                                    if fc:
+                                        fc_id_val = fc.get("id", str(uuid.uuid4()))
+                                        fc_name = fc.get("name", "")
+
+                                        if fc_name == "adk_request_credential":
+                                            # Skip — auth handled via requested_auth_configs below
+                                            continue
+
+                                        yield encoder.encode(ToolCallStartEvent(type=EventType.TOOL_CALL_START, tool_call_id=fc_id_val, tool_call_name=fc_name, parent_message_id=None))
+                                        if fc.get("args"):
+                                            yield encoder.encode(ToolCallArgsEvent(type=EventType.TOOL_CALL_ARGS, tool_call_id=fc_id_val, delta=json.dumps(fc["args"])))
+                                        yield encoder.encode(ToolCallEndEvent(type=EventType.TOOL_CALL_END, tool_call_id=fc_id_val))
+                                        continue
+
+                                    fr = part.get("functionResponse") or part.get("function_response")
+                                    if fr:
+                                        continue
+
+                                    text = part.get("text")
+                                    if text:
+                                        full_text += text
+
+                                # Check actions.requested_auth_configs (ADK 1.x pattern)
+                                requested_auth = actions.get("requested_auth_configs", {})
+                                if requested_auth:
+                                    for tool_id, auth_cfg in requested_auth.items():
+                                        exchanged = auth_cfg.get("exchanged_auth_credential", {})
+                                        oauth2 = exchanged.get("oauth2", {})
+                                        auth_uri = oauth2.get("auth_uri") or oauth2.get("auth_response_uri")
+                                        nonce = oauth2.get("nonce")
+                                        logger.info(f"Auth via requested_auth_configs: tool={tool_id}, nonce={nonce}")
+
+                                        if nonce:
+                                            auth_consent_store["latest"] = {
+                                                "consent_nonce": nonce,
+                                                "user_id": user_id,
+                                                "function_call_id": tool_id,
+                                                "auth_config": auth_cfg,
+                                                "thread_id": thread_id,
+                                                "session_id": session_id,
+                                            }
+
+                                        if auth_uri:
+                                            auth_msg_id = str(uuid.uuid4())
+                                            yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=auth_msg_id, role="assistant"))
+                                            yield encoder.encode(TextMessageContentEvent(
+                                                type=EventType.TEXT_MESSAGE_CONTENT,
+                                                message_id=auth_msg_id,
+                                                delta=f"🔐 **Authentication required** to access your data.\n\n[Click here to authorize access]({auth_uri})\n\nA new window will open for Google sign-in. The conversation will resume automatically after you authorize.",
+                                            ))
+                                            yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=auth_msg_id))
+
+                                error_msg = event.get("error_message")
+                                if error_msg:
+                                    err_msg_id = str(uuid.uuid4())
+                                    yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=err_msg_id, role="assistant"))
+                                    yield encoder.encode(TextMessageContentEvent(type=EventType.TEXT_MESSAGE_CONTENT, message_id=err_msg_id, delta=f"⚠️ {error_msg}"))
+                                    yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=err_msg_id))
+
+                    if full_text:
+                        yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
+                        yield encoder.encode(TextMessageContentEvent(type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id, delta=full_text))
+                        yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
+
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Agent Engine error: {e.response.text[:300]}")
+                yield encoder.encode(RunErrorEvent(type=EventType.RUN_ERROR, message=f"Agent Engine error: {e.response.status_code}"))
+            except Exception as e:
+                logger.error(f"Error: {e}", exc_info=True)
+                yield encoder.encode(RunErrorEvent(type=EventType.RUN_ERROR, message=str(e)))
+
+            yield encoder.encode(RunFinishedEvent(type=EventType.RUN_FINISHED, thread_id=thread_id, run_id=run_id))
+
+        return StreamingResponse(stream_events(), media_type=encoder.get_content_type())
+
+    @app.get("/commit")
+    async def commit(request: Request):
+        logger.info(f"Commit params: {dict(request.query_params)}")
+
+        connector = request.query_params.get("auth_provider_name") or request.query_params.get("connector_name")
+        user_id_validation_state = request.query_params.get("user_id_validation_state")
+        stored = auth_consent_store.get("latest", {})
+
+        payload = {
+            "userId": stored.get("user_id", config.user_id),
+            "userIdValidationState": user_id_validation_state,
+            "consentNonce": stored.get("consent_nonce"),
+        }
+
+        if not connector:
+            return HTMLResponse("<p>Error: Missing connector name</p>", status_code=400)
+
+        finalize_url = f"https://iamconnectorcredentials.googleapis.com/v1alpha/{connector}/credentials:finalize"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(finalize_url, json=payload)
+                resp.raise_for_status()
+                resp_data = resp.json()
+                logger.info(f"Finalize response: {resp_data}")
+
+                operation_name = resp_data.get("name")
+                done = resp_data.get("done", False)
+
+                if operation_name and not done:
+                    logger.info(f"Polling LRO: {operation_name}")
+                    poll_url = f"https://iamconnectorcredentials.googleapis.com/v1alpha/{operation_name}"
+                    for attempt in range(30):
+                        await asyncio.sleep(1.0)
+                        poll_resp = await client.get(poll_url)
+                        poll_resp.raise_for_status()
+                        poll_data = poll_resp.json()
+                        logger.info(f"Poll attempt {attempt + 1}: done={poll_data.get('done')}")
+                        if poll_data.get("done", False):
+                            if "error" in poll_data:
+                                raise RuntimeError(f"LRO failed: {poll_data['error'].get('message', 'Unknown')}")
+                            logger.info("LRO completed successfully")
+                            break
+                    else:
+                        raise TimeoutError("LRO timed out")
+
+                logger.info("Credential finalized successfully")
+        except Exception as e:
+            err_text = e.response.text if hasattr(e, "response") and e.response else str(e)
+            logger.error(f"Finalize failed: {err_text}")
+            return HTMLResponse(f"<p>Error: {err_text}</p>", status_code=500)
+
+        return HTMLResponse("""
+            <html><body>
+            <p>Authentication successful! Processing your request...</p>
+            <script>
+                if (window.opener) {
+                    window.opener.postMessage({type: 'AUTH_COMPLETE'}, '*');
+                }
+                setTimeout(() => window.close(), 1500);
+            </script>
+            </body></html>
+        """)
 
     @app.get(EndpointConfig.ROOT_PATH)
     async def root():
-        return {
-            "message": "Loan Advisor AG-UI Backend is running",
-            "agent": "loan_advisor",
-            "endpoint": EndpointConfig.AGENT_PATH,
-        }
+        return {"message": "Loan Advisor AG-UI Backend (Agent Engine proxy)", "agent_engine": AGENT_ENGINE_ID}
 
     @app.get(EndpointConfig.HEALTH_PATH)
     async def health_check():
-        return {"status": "healthy", "service": "loan_advisor_backend"}
+        return {"status": "healthy", "agent_engine": AGENT_ENGINE_ID}
 
-    logger.info("FastAPI application created for Loan Advisor")
+    logger.info(f"AG-UI Backend proxying to Agent Engine: {AGENT_ENGINE_ID}")
 
     return app

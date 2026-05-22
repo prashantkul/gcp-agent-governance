@@ -2,6 +2,12 @@
 import os
 import warnings
 
+try:
+    import urllib3.contrib.pyopenssl
+    urllib3.contrib.pyopenssl.extract_from_urllib3()
+except Exception:
+    pass
+
 import google.auth
 from dotenv import load_dotenv
 
@@ -18,9 +24,7 @@ from google.adk.agents import Agent
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.credential_manager import CredentialManager
 from google.adk.integrations.agent_identity import GcpAuthProvider, GcpAuthProviderScheme
-from google.adk.models import Gemini
 from google.adk.tools.authenticated_function_tool import AuthenticatedFunctionTool
-from google.genai import types
 
 GOOGLE_CLOUD_PROJECT = os.environ["GOOGLE_CLOUD_PROJECT"]
 MAIL_AUTH_RESOURCE_NAME = os.environ.get("MAIL_AUTH_RESOURCE_NAME")
@@ -311,10 +315,7 @@ if BQ_AUTH_RESOURCE_NAME:
 
 root_agent = Agent(
     name="loan_advisor",
-    model=Gemini(
-        model="gemini-2.5-flash",
-        retry_options=types.HttpRetryOptions(attempts=3),
-    ),
+    model="gemini-2.5-flash",
     description=(
         "Acme Financial Services Loan Advisor — "
         "helps customers check loan eligibility, estimate rates, "
@@ -348,4 +349,12 @@ Rules:
 - When asked about loan applications, products, or customer data, use query_bigquery.
 """,
     tools=agent_tools,
+)
+
+
+from google.adk.apps import App
+
+app = App(
+    name="loan_advisor_demo",
+    root_agent=root_agent,
 )

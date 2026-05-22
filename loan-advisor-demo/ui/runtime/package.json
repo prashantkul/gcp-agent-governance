@@ -10,10 +10,10 @@
   },
   "dependencies": {
     "@copilotkit/runtime": "^1.9.3",
-    "@ag-ui/client": "^0.0.17",
+    "@ag-ui/client": "^0.0.53",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
-    "express": "^5.1.0"
+    "express": "^4.21.0"
   },
   "engines": {
     "node": ">=18.0.0"

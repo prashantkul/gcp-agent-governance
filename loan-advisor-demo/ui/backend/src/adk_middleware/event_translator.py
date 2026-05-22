@@ -20,11 +20,15 @@ from ag_ui.core import (
     StateSnapshotEvent,
     StateDeltaEvent,
     CustomEvent,
+    RunFinishedEvent,
 )
 
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Shared store for OAuth consent nonces — written here, read by /commit endpoint
+auth_consent_store: dict[str, dict] = {}
 
 
 class EventTranslator:
@@ -34,6 +38,27 @@ class EventTranslator:
         self._active_tool_calls: Dict[str, str] = {}
         self._streaming_message_id: Optional[str] = None
         self._is_streaming: bool = False
+        self._auth_interrupt: Optional[Dict[str, Any]] = None
+
+    @property
+    def has_auth_interrupt(self) -> bool:
+        """True if an auth request was translated and an interrupt should be emitted."""
+        return self._auth_interrupt is not None
+
+    def get_auth_interrupt_event(self, thread_id: str, run_id: str) -> RunFinishedEvent:
+        """Build a RunFinishedEvent with interrupt outcome for OAuth auth."""
+        interrupts = self._auth_interrupt.get("interrupts", []) if self._auth_interrupt else []
+        return RunFinishedEvent(
+            type=EventType.RUN_FINISHED,
+            threadId=thread_id,
+            runId=run_id,
+            result={
+                "outcome": {
+                    "type": "interrupt",
+                    "interrupts": interrupts,
+                },
+            },
+        )
 
     async def translate(
         self,
@@ -87,6 +112,18 @@ class EventTranslator:
                         function_responses
                     ):
                         yield event
+
+            # Handle auth requests — surface the OAuth URL to the user
+            if (
+                hasattr(adk_event, "actions")
+                and adk_event.actions
+                and hasattr(adk_event.actions, "requested_auth_configs")
+                and adk_event.actions.requested_auth_configs
+            ):
+                async for event in self._translate_auth_request(
+                    adk_event.actions.requested_auth_configs, thread_id, run_id
+                ):
+                    yield event
 
             # Handle state changes
             if (
@@ -219,6 +256,105 @@ class EventTranslator:
                 tool_call_id=tool_call_id,
                 content=json.dumps(func_response.response),
             )
+
+    async def _translate_auth_request(
+        self,
+        requested_auth_configs: dict,
+        thread_id: str = "",
+        run_id: str = "",
+    ) -> AsyncGenerator[BaseEvent, None]:
+        """Surface OAuth auth URLs as a chat message and emit an AG-UI interrupt."""
+        interrupts = []
+
+        for tool_name, auth_config in requested_auth_configs.items():
+            # Dump the full auth config to find the right URL
+            config_dump = None
+            try:
+                if hasattr(auth_config, "model_dump"):
+                    config_dump = auth_config.model_dump()
+                else:
+                    config_dump = vars(auth_config)
+            except Exception:
+                config_dump = {"raw": str(auth_config)}
+
+            logger.info(f"Auth config for {tool_name}: {json.dumps(config_dump, indent=2, default=str)}")
+
+            # Extract the OAuth auth_uri and nonce from exchanged_auth_credential
+            auth_url = None
+            nonce = None
+            exchanged = config_dump.get("exchanged_auth_credential", {})
+            if isinstance(exchanged, dict):
+                oauth2 = exchanged.get("oauth2", {})
+                if isinstance(oauth2, dict):
+                    auth_url = oauth2.get("auth_uri")
+                    nonce = oauth2.get("nonce")
+
+            # Use tool_name as the function_call_id (matches ADK convention)
+            function_call_id = tool_name
+
+            # Store nonce + full auth config for /commit callback and resume
+            if nonce:
+                auth_consent_store["latest"] = {
+                    "consent_nonce": nonce,
+                    "user_id": "prashant@pskulkarni.altostrat.com",
+                    "tool_name": tool_name,
+                    "auth_config": config_dump,
+                    "function_call_id": function_call_id,
+                    "thread_id": thread_id,
+                }
+                logger.info(f"Stored consent nonce + thread_id={thread_id}, function_call_id={function_call_id}")
+
+            if not auth_url:
+                scheme = config_dump.get("auth_scheme", {})
+                if isinstance(scheme, dict):
+                    auth_url = scheme.get("authorization_url") or scheme.get("continue_uri")
+
+            # Emit text message with the auth link (user needs to click it)
+            msg_id = str(uuid.uuid4())
+            yield TextMessageStartEvent(
+                type=EventType.TEXT_MESSAGE_START,
+                message_id=msg_id,
+                role="assistant",
+            )
+
+            if auth_url and "accounts.google.com" in auth_url:
+                yield TextMessageContentEvent(
+                    type=EventType.TEXT_MESSAGE_CONTENT,
+                    message_id=msg_id,
+                    delta=f"🔐 **Authentication required** to access your data.\n\n[Click here to authorize access]({auth_url})\n\nA new window will open for Google sign-in. After you authorize, the conversation will resume automatically.",
+                )
+            else:
+                yield TextMessageContentEvent(
+                    type=EventType.TEXT_MESSAGE_CONTENT,
+                    message_id=msg_id,
+                    delta=f"🔐 **Authentication required** for `{tool_name}`.\n\nAuth URL: {auth_url or 'Not available'}",
+                )
+
+            yield TextMessageEndEvent(
+                type=EventType.TEXT_MESSAGE_END,
+                message_id=msg_id,
+            )
+
+            # Collect interrupt for this auth request
+            interrupts.append({
+                "id": function_call_id,
+                "reason": "input_required",
+                "message": f"Authentication required for {tool_name}",
+                "data": {
+                    "auth_url": auth_url,
+                    "tool_name": tool_name,
+                },
+            })
+
+        logger.info(f"Auth requested for tools: {list(requested_auth_configs.keys())}")
+
+        # Signal that this run is an auth interrupt so _run_adk_in_background
+        # can emit RunFinished with the interrupt outcome instead of a normal finish.
+        self._auth_interrupt = {
+            "thread_id": thread_id,
+            "run_id": run_id,
+            "interrupts": interrupts,
+        }
 
     def _create_state_delta_event(
         self,

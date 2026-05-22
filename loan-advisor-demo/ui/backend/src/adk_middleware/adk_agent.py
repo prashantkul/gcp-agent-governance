@@ -23,7 +23,7 @@ from google.adk.memory import InMemoryMemoryService
 from google.genai import types
 
 from .agent_registry import AgentRegistry
-from .event_translator import EventTranslator
+from .event_translator import EventTranslator, auth_consent_store
 from .session_manager import SessionManager
 from .execution_state import ExecutionState
 
@@ -98,7 +98,12 @@ class ADKAgent:
     async def run(
         self, input_data: RunAgentInput, agent_id: str = "default"
     ) -> AsyncGenerator[BaseEvent, None]:
-        if self._is_tool_result_submission(input_data):
+        # Check for AG-UI interrupt resume (OAuth flow)
+        resume = getattr(input_data, "resume", None)
+        if resume and isinstance(resume, list) and len(resume) > 0:
+            async for event in self._handle_auth_resume(input_data, agent_id):
+                yield event
+        elif self._is_tool_result_submission(input_data):
             async for event in self._handle_tool_result_submission(
                 input_data, agent_id
             ):
@@ -106,6 +111,113 @@ class ADKAgent:
         else:
             async for event in self._start_new_execution(input_data, agent_id):
                 yield event
+
+    async def _handle_auth_resume(
+        self, input_data: RunAgentInput, agent_id: str = "default"
+    ) -> AsyncGenerator[BaseEvent, None]:
+        """Handle an AG-UI interrupt resume after OAuth authentication.
+
+        CopilotKit sends resume=[{interruptId, status, payload}] after the user
+        completes the OAuth popup.  We translate this into an ADK
+        `adk_request_credential` function response and feed it to the runner so
+        the agent can continue where it left off.
+        """
+        resume_list = getattr(input_data, "resume", [])
+        logger.info(f"Handling auth resume with {len(resume_list)} resume items")
+
+        # Look up stored auth consent data
+        stored = auth_consent_store.get("latest", {})
+        function_call_id = stored.get("function_call_id")
+        auth_config_dump = stored.get("auth_config")
+
+        if not function_call_id or not auth_config_dump:
+            logger.warning("Auth resume requested but no stored auth consent data found")
+            # Fall through to a normal execution with the user's latest message
+            async for event in self._start_new_execution(input_data, agent_id):
+                yield event
+            return
+
+        logger.info(
+            f"Resuming with function_call_id={function_call_id}, "
+            f"thread_id={input_data.thread_id}"
+        )
+
+        # Build the adk_request_credential function response
+        auth_credential_content = types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id=function_call_id,
+                        name="adk_request_credential",
+                        response=auth_config_dump,
+                    )
+                )
+            ],
+        )
+
+        # Run the agent with the credential response instead of user text
+        try:
+            yield RunStartedEvent(
+                type=EventType.RUN_STARTED,
+                thread_id=input_data.thread_id,
+                run_id=input_data.run_id,
+            )
+
+            user_id = self._get_user_id(input_data)
+            app_name = self._get_app_name(input_data)
+
+            registry = AgentRegistry.get_instance()
+            adk_agent = registry.get_agent(agent_id)
+            runner = self._create_runner(adk_agent=adk_agent, app_name=app_name)
+            run_config = self._default_run_config()
+
+            await self._ensure_session_exists(
+                app_name, user_id, input_data.thread_id, input_data.state
+            )
+
+            event_translator = EventTranslator()
+
+            async for adk_event in runner.run_async(
+                user_id=user_id,
+                session_id=input_data.thread_id,
+                new_message=auth_credential_content,
+                run_config=run_config,
+            ):
+                if not adk_event.is_final_response():
+                    async for ag_ui_event in event_translator.translate(
+                        adk_event, input_data.thread_id, input_data.run_id
+                    ):
+                        yield ag_ui_event
+
+            # Force close any streaming messages
+            async for ag_ui_event in event_translator.force_close_streaming_message():
+                yield ag_ui_event
+
+            # Emit final state snapshot
+            final_state = await self._session_manager.get_session_state(
+                input_data.thread_id, app_name, user_id
+            )
+            if final_state:
+                yield event_translator._create_state_snapshot_event(final_state)
+
+            yield RunFinishedEvent(
+                type=EventType.RUN_FINISHED,
+                thread_id=input_data.thread_id,
+                run_id=input_data.run_id,
+            )
+
+            # Clear the stored auth data after successful resume
+            auth_consent_store.pop("latest", None)
+            logger.info("Auth resume completed successfully")
+
+        except Exception as e:
+            logger.error(f"Error in auth resume: {e}", exc_info=True)
+            yield RunErrorEvent(
+                type=EventType.RUN_ERROR,
+                message=str(e),
+                code="AUTH_RESUME_ERROR",
+            )
 
     def _is_tool_result_submission(self, input_data: RunAgentInput) -> bool:
         if not input_data.messages:
@@ -223,14 +335,20 @@ class ADKAgent:
             async with self._execution_lock:
                 self._active_executions[input_data.thread_id] = execution
 
+            already_finished = False
             async for event in self._stream_events(execution):
                 yield event
+                # If the background task already emitted a RunFinishedEvent
+                # (e.g. with interrupt outcome), don't emit another one.
+                if isinstance(event, RunFinishedEvent):
+                    already_finished = True
 
-            yield RunFinishedEvent(
-                type=EventType.RUN_FINISHED,
-                thread_id=input_data.thread_id,
-                run_id=input_data.run_id,
-            )
+            if not already_finished:
+                yield RunFinishedEvent(
+                    type=EventType.RUN_FINISHED,
+                    thread_id=input_data.thread_id,
+                    run_id=input_data.run_id,
+                )
 
         except Exception as e:
             logger.error(f"Error in new execution: {e}", exc_info=True)
@@ -363,6 +481,15 @@ class ADKAgent:
                     final_state
                 )
                 await event_queue.put(ag_ui_event)
+
+            # If there was an auth interrupt, emit the interrupt RunFinishedEvent
+            # so the outer loop skips the normal RunFinishedEvent.
+            if event_translator.has_auth_interrupt:
+                interrupt_event = event_translator.get_auth_interrupt_event(
+                    input_data.thread_id, input_data.run_id
+                )
+                await event_queue.put(interrupt_event)
+                logger.info("Emitted RunFinishedEvent with interrupt outcome for auth")
 
             await event_queue.put(None)
 

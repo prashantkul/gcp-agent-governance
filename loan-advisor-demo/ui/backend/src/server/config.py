@@ -11,7 +11,7 @@ class ServerConfig:
     log_level: str = os.getenv("LOG_LEVEL", "info")
     cors_origins: str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:4000")
     app_name: str = os.getenv("APP_NAME", "loan_advisor_app")
-    user_id: str = os.getenv("USER_ID", "demo_user")
+    user_id: str = os.getenv("USER_ID", "prashant@pskulkarni.altostrat.com")
     session_timeout_seconds: int = int(os.getenv("SESSION_TIMEOUT_SECONDS", "3600"))
     use_in_memory_services: bool = os.getenv("USE_IN_MEMORY_SERVICES", "true").lower() == "true"
 
