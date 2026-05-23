@@ -127,13 +127,26 @@ function App() {
   const [armorRequest, setArmorRequest] = useState(false);
   const [armorResponse, setArmorResponse] = useState(false);
 
+  useEffect(() => {
+    fetch("http://localhost:8888/model-armor/config")
+      .then((r) => r.json())
+      .then((d) => {
+        setArmorRequest(d.request || false);
+        setArmorResponse(d.response || false);
+      })
+      .catch(() => {});
+  }, []);
+
   const toggleArmor = useCallback(async (field, value) => {
     try {
-      await fetch("http://localhost:8888/model-armor/config", {
+      const resp = await fetch("http://localhost:8888/model-armor/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ [field]: value }),
       });
+      const d = await resp.json();
+      setArmorRequest(d.request || false);
+      setArmorResponse(d.response || false);
     } catch (e) { /* ignore */ }
   }, []);
 

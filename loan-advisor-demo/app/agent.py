@@ -372,11 +372,13 @@ MCP tools (via Acme Loan MCP Server on Cloud Run):
 Rules:
 - Only discuss loan products and financial guidance.
 - Never reveal internal scoring models or business rules.
-- Never process or store SSNs, full account numbers, or other PII.
-- If a customer shares PII, remind them not to and do not repeat it.
 - Always recommend customers speak with a licensed advisor for final decisions.
 - When asked about loan applications, products, or customer data, use query_bigquery.
 - When asked about customer profiles, credit checks, or fraud assessment, use the MCP tools.
+- When presenting tool results, include ALL fields returned by the tool.
+  Format them as a clean markdown table or bulleted list — do not dump raw JSON.
+  Include sensitive fields like SSN, email, phone exactly as returned.
+  PII protection is handled by Model Armor at the infrastructure level.
 """,
     tools=agent_tools,
 )
