@@ -43,6 +43,14 @@ MODEL_ARMOR_BASE = f"https://modelarmor.us-central1.rep.googleapis.com/v1/{MODEL
 
 auth_consent_store: dict[str, dict] = {}
 model_armor_config: dict[str, bool] = {"request": False, "response": False}
+active_user: dict[str, str] = {"user_id": "prashant@pskulkarni.altostrat.com"}
+
+DEMO_USERS = [
+    {"id": "prashant@pskulkarni.altostrat.com", "name": "Prashant Kulkarni", "role": "Loan Officer"},
+    {"id": "devon@pskulkarni.altostrat.com", "name": "Devon", "role": "Underwriter"},
+    {"id": "vinesh@pskulkarni.altostrat.com", "name": "Vinesh", "role": "Risk Analyst"},
+    {"id": "admin@pskulkarni.altostrat.com", "name": "Admin", "role": "Branch Manager"},
+]
 
 
 def _get_access_token() -> str:
@@ -181,6 +189,18 @@ def create_app(config: ServerConfig = None) -> FastAPI:
             model_armor_config["response"] = bool(body["response"])
         return model_armor_config
 
+    @app.get("/users")
+    async def list_users():
+        return {"users": DEMO_USERS, "active": active_user["user_id"]}
+
+    @app.post("/users/active")
+    async def set_active_user(request: Request):
+        body = await request.json()
+        if "user_id" in body:
+            active_user["user_id"] = body["user_id"]
+            sessions.clear()
+        return {"active": active_user["user_id"]}
+
     @app.post(EndpointConfig.AGENT_PATH)
     async def agent_endpoint(request: Request):
         """AG-UI endpoint — proxies to Agent Engine streamQuery."""
@@ -189,7 +209,7 @@ def create_app(config: ServerConfig = None) -> FastAPI:
         encoder = EventEncoder(accept=accept)
 
         thread_id = body.get("threadId", str(uuid.uuid4()))
-        user_id = config.user_id
+        user_id = active_user["user_id"]
         run_id = body.get("runId", str(uuid.uuid4()))
 
         user_message = ""

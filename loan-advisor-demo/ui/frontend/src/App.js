@@ -126,6 +126,8 @@ function App() {
   const agent = process.env.REACT_APP_COPILOT_AGENT || "loan_advisor";
   const [armorRequest, setArmorRequest] = useState(false);
   const [armorResponse, setArmorResponse] = useState(false);
+  const [users, setUsers] = useState([]);
+  const [activeUser, setActiveUser] = useState("");
 
   useEffect(() => {
     fetch("http://localhost:8888/model-armor/config")
@@ -133,6 +135,13 @@ function App() {
       .then((d) => {
         setArmorRequest(d.request || false);
         setArmorResponse(d.response || false);
+      })
+      .catch(() => {});
+    fetch("http://localhost:8888/users")
+      .then((r) => r.json())
+      .then((d) => {
+        setUsers(d.users || []);
+        setActiveUser(d.active || "");
       })
       .catch(() => {});
   }, []);
@@ -222,6 +231,50 @@ function App() {
               </div>
             </div>
           </div>
+
+          <div style={{ height: 1, background: "#e1e3e1", margin: "0 20px" }} />
+
+          {/* User selector */}
+          {users.length > 0 && (
+            <div style={{ padding: "12px 20px" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#5f6368", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>
+                Signed in as
+              </div>
+              <select
+                value={activeUser}
+                onChange={async (e) => {
+                  const uid = e.target.value;
+                  setActiveUser(uid);
+                  try {
+                    await fetch("http://localhost:8888/users/active", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ user_id: uid }),
+                    });
+                  } catch (err) { /* ignore */ }
+                }}
+                style={{
+                  width: "100%",
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "1px solid #c5d9f9",
+                  background: "#e8f0fe",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "#1a73e8",
+                  cursor: "pointer",
+                  outline: "none",
+                  fontFamily: "inherit",
+                }}
+              >
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name} ({u.role})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div style={{ height: 1, background: "#e1e3e1", margin: "0 20px" }} />
 
