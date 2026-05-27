@@ -85,7 +85,7 @@ function AuthResumeListener() {
       const authLink = document.querySelector('a[href*="accounts.google.com"]');
       if (authLink) {
         cookiesSet.current = true;
-        fetch("http://localhost:8888/auth-nonce", { credentials: "include" })
+        fetch(`${BACKEND_URL}/auth-nonce`, { credentials: "include" })
           .then(() => console.log("Auth cookies set"))
           .catch(() => {});
       }
@@ -117,12 +117,15 @@ function AuthResumeListener() {
   return null;
 }
 
+/* ── Config ─────────────────────────────────────────────────────────────── */
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
+const RUNTIME_URL =
+  process.env.REACT_APP_COPILOT_RUNTIME_URL || "/api/copilotkit";
+
 /* ── Main App ───────────────────────────────────────────────────────────── */
 
 function App() {
-  const runtimeUrl =
-    process.env.REACT_APP_COPILOT_RUNTIME_URL ||
-    "http://localhost:4002/api/copilotkit";
   const agent = process.env.REACT_APP_COPILOT_AGENT || "loan_advisor";
   const [armorRequest, setArmorRequest] = useState(false);
   const [armorResponse, setArmorResponse] = useState(false);
@@ -130,14 +133,14 @@ function App() {
   const [activeUser, setActiveUser] = useState("");
 
   useEffect(() => {
-    fetch("http://localhost:8888/model-armor/config")
+    fetch(`${BACKEND_URL}/model-armor/config`)
       .then((r) => r.json())
       .then((d) => {
         setArmorRequest(d.request || false);
         setArmorResponse(d.response || false);
       })
       .catch(() => {});
-    fetch("http://localhost:8888/users")
+    fetch(`${BACKEND_URL}/users`)
       .then((r) => r.json())
       .then((d) => {
         setUsers(d.users || []);
@@ -148,7 +151,7 @@ function App() {
 
   const toggleArmor = useCallback(async (field, value) => {
     try {
-      const resp = await fetch("http://localhost:8888/model-armor/config", {
+      const resp = await fetch(`${BACKEND_URL}/model-armor/config`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ [field]: value }),
@@ -160,7 +163,7 @@ function App() {
   }, []);
 
   return (
-    <CopilotKit agent={agent} runtimeUrl={runtimeUrl}>
+    <CopilotKit agent={agent} runtimeUrl={RUNTIME_URL}>
       <AuthResumeListener />
       <div style={{ display: "flex", height: "100vh", background: "#f8f9fa" }}>
         {/* ── Sidebar ─────────────────────────────────────────────── */}
@@ -246,7 +249,7 @@ function App() {
                   const uid = e.target.value;
                   setActiveUser(uid);
                   try {
-                    await fetch("http://localhost:8888/users/active", {
+                    await fetch(`${BACKEND_URL}/users/active`, {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({ user_id: uid }),
