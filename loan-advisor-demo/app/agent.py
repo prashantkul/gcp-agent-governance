@@ -357,14 +357,23 @@ async def _causal_armor_before_tool(tool, args, tool_context):
         _ca_provider = VLLMProxyProvider(
             base_url=CAUSAL_ARMOR_VLLM_URL,
             model=os.environ.get("CAUSAL_ARMOR_MODEL", "google/gemma-2-2b-it"),
-            timeout=30.0,
+            timeout=60.0,
         )
 
     tool_name = getattr(tool, "name", str(tool))
     untrusted_tools: set[str] = set()
     messages: list[CAMessage] = []
 
+    current_inv = tool_context.invocation_id
+    recent_invocations = set()
+    for event in reversed(tool_context.session.events):
+        recent_invocations.add(event.invocation_id)
+        if len(recent_invocations) > 2:
+            break
+
     for event in tool_context.session.events:
+        if event.invocation_id not in recent_invocations:
+            continue
         if not event.content or not event.content.parts:
             continue
         for part in event.content.parts:
