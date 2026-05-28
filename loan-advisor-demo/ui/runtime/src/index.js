@@ -37,7 +37,7 @@ app.get("/health", (_req, res) => {
   res.json({ status: "healthy", backend: backendUrl, agentName });
 });
 
-const proxyPrefixes = ["/agent", "/auth-nonce", "/commit", "/model-armor", "/users", "/resume-result"];
+const proxyPrefixes = ["/agent", "/auth-nonce", "/commit", "/model-armor", "/causal-armor", "/users", "/resume-result"];
 app.use(
   createProxyMiddleware({
     target: backendUrl,

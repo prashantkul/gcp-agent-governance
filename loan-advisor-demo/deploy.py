@@ -18,6 +18,7 @@ AGENT_RUNTIME_DISPLAY_NAME = os.environ.get("AGENT_RUNTIME_DISPLAY_NAME", "loan-
 MAIL_AUTH_RESOURCE_NAME = os.environ.get("MAIL_AUTH_RESOURCE_NAME", "")
 BQ_AUTH_RESOURCE_NAME = os.environ.get("BQ_AUTH_RESOURCE_NAME", "")
 CONTINUE_URI = os.environ.get("CONTINUE_URI", "")
+CAUSAL_ARMOR_VLLM_URL = os.environ.get("CAUSAL_ARMOR_VLLM_URL", "")
 
 
 def deploy_agent():
@@ -45,6 +46,7 @@ def deploy_agent():
         "requirements": [
             "google-cloud-aiplatform[agent_engines,adk]==1.153.1",
             "google-adk[agent-identity]==1.34.0",
+            "causal-armor>=0.1.2",
             "httpx==0.28.1",
             "python-dotenv>=1.0.1",
             "urllib3>=2.0.0",
@@ -58,6 +60,9 @@ def deploy_agent():
             "MAIL_AUTH_RESOURCE_NAME": MAIL_AUTH_RESOURCE_NAME,
             "BQ_AUTH_RESOURCE_NAME": BQ_AUTH_RESOURCE_NAME,
             "CONTINUE_URI": CONTINUE_URI,
+            "CAUSAL_ARMOR_VLLM_URL": CAUSAL_ARMOR_VLLM_URL,
+            "CAUSAL_ARMOR_MODEL": "google/gemma-2-2b-it",
+            "CAUSAL_ARMOR_TAU": "-2.0",
             "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true",
         },
         "extra_packages": ["app"],

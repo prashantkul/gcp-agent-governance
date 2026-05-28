@@ -43,6 +43,7 @@ MODEL_ARMOR_BASE = f"https://modelarmor.us-central1.rep.googleapis.com/v1/{MODEL
 
 auth_consent_store: dict[str, dict] = {}
 model_armor_config: dict[str, bool] = {"request": False, "response": False}
+causal_armor_config: dict[str, object] = {"enabled": False, "margin_tau": -2.0}
 active_user: dict[str, str] = {"user_id": "prashant@pskulkarni.altostrat.com"}
 
 DEMO_USERS = [
@@ -189,6 +190,19 @@ def create_app(config: ServerConfig = None) -> FastAPI:
             model_armor_config["response"] = bool(body["response"])
         return model_armor_config
 
+    @app.get("/causal-armor/config")
+    async def get_causal_armor_config():
+        return causal_armor_config
+
+    @app.post("/causal-armor/config")
+    async def set_causal_armor_config(request: Request):
+        body = await request.json()
+        if "enabled" in body:
+            causal_armor_config["enabled"] = bool(body["enabled"])
+        if "margin_tau" in body:
+            causal_armor_config["margin_tau"] = float(body["margin_tau"])
+        return causal_armor_config
+
     @app.get("/users")
     async def list_users():
         return {"users": DEMO_USERS, "active": active_user["user_id"]}
@@ -303,6 +317,7 @@ def create_app(config: ServerConfig = None) -> FastAPI:
                     }
 
                     full_text = ""
+                    tool_results_captured: list[dict] = []
                     msg_id = str(uuid.uuid4())
 
                     async with client.stream(
@@ -361,6 +376,10 @@ def create_app(config: ServerConfig = None) -> FastAPI:
 
                                     fr = part.get("functionResponse") or part.get("function_response")
                                     if fr:
+                                        tool_results_captured.append({
+                                            "name": fr.get("name", "unknown"),
+                                            "response": fr.get("response", {}),
+                                        })
                                         continue
 
                                     text = part.get("text")
@@ -426,12 +445,27 @@ def create_app(config: ServerConfig = None) -> FastAPI:
                             except Exception as e:
                                 logger.warning(f"Model Armor response scan failed: {e}")
 
+                        causal_armor_note = ""
+                        ca_blocked = any(
+                            "causal_armor" in str(tr.get("response", ""))
+                            for tr in tool_results_captured
+                        ) or "Causal Armor blocked" in full_text
+                        if ca_blocked:
+                            causal_armor_note = (
+                                "🔬 **Causal Armor — Tool Call Blocked**\n\n"
+                                "LOO causal attribution detected that an untrusted tool result "
+                                "is dominating the agent's action — possible **indirect prompt injection**.\n\n"
+                                "The tool call was **prevented** before execution."
+                            )
+
                         if full_text:
                             display_text = full_text
                             if armor_warning:
                                 display_text += f"\n\n---\n⚠️ *Model Armor advisory (request): {armor_warning}*"
                             if resp_armor_note:
                                 display_text += f"\n\n---\n⚠️ *Model Armor advisory (response): {resp_armor_note}*"
+                            if causal_armor_note:
+                                display_text += f"\n\n---\n{causal_armor_note}"
                             yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
                             yield encoder.encode(TextMessageContentEvent(type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id, delta=display_text))
                             yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))

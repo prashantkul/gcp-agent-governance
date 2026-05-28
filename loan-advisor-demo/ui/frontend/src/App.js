@@ -129,6 +129,7 @@ function App() {
   const agent = process.env.REACT_APP_COPILOT_AGENT || "loan_advisor";
   const [armorRequest, setArmorRequest] = useState(false);
   const [armorResponse, setArmorResponse] = useState(false);
+  const [causalArmor, setCausalArmor] = useState(false);
   const [users, setUsers] = useState([]);
   const [activeUser, setActiveUser] = useState("");
 
@@ -139,6 +140,10 @@ function App() {
         setArmorRequest(d.request || false);
         setArmorResponse(d.response || false);
       })
+      .catch(() => {});
+    fetch(`${BACKEND_URL}/causal-armor/config`)
+      .then((r) => r.json())
+      .then((d) => setCausalArmor(d.enabled || false))
       .catch(() => {});
     fetch(`${BACKEND_URL}/users`)
       .then((r) => r.json())
@@ -159,6 +164,17 @@ function App() {
       const d = await resp.json();
       setArmorRequest(d.request || false);
       setArmorResponse(d.response || false);
+    } catch (e) { /* ignore */ }
+  }, []);
+
+  const toggleCausalArmor = useCallback(async (value) => {
+    setCausalArmor(value);
+    try {
+      await fetch(`${BACKEND_URL}/causal-armor/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: value }),
+      });
     } catch (e) { /* ignore */ }
   }, []);
 
@@ -488,6 +504,36 @@ function App() {
                   </label>
                 </div>
               ))}
+
+              {/* Causal Armor Toggle */}
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #f0f0f0" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}>
+                  <span className="material-icons-outlined" style={{ fontSize: 16, color: causalArmor ? "#9334e6" : "#9aa0a6" }}>science</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#1f1f1f" }}>Causal Armor</div>
+                    <div style={{ fontSize: 10, color: "#5f6368" }}>LOO prompt injection detection</div>
+                  </div>
+                  <label style={{ position: "relative", width: 36, height: 20, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={causalArmor}
+                      onChange={(e) => toggleCausalArmor(e.target.checked)}
+                      style={{ display: "none" }}
+                    />
+                    <span style={{
+                      position: "absolute", inset: 0, borderRadius: 10,
+                      background: causalArmor ? "#9334e6" : "#dadce0",
+                      transition: "background 0.2s",
+                    }} />
+                    <span style={{
+                      position: "absolute", top: 2, left: causalArmor ? 18 : 2,
+                      width: 16, height: 16, borderRadius: "50%",
+                      background: "#fff", boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                      transition: "left 0.2s",
+                    }} />
+                  </label>
+                </div>
+              </div>
             </div>
           </div>
 
