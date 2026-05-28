@@ -544,6 +544,26 @@ function App() {
                     }} />
                   </label>
                 </div>
+                <div style={{ fontSize: 9, fontWeight: 700, color: "#9aa0a6", textTransform: "uppercase", letterSpacing: 1, marginTop: 8, marginBottom: 4 }}>
+                  Test IPI
+                </div>
+                {[
+                  { step: "1", text: "Look up customer CUST-003" },
+                  { step: "2", text: "Are there any pending actions for this customer?" },
+                ].map((t) => (
+                  <div
+                    key={t.step}
+                    onClick={() => navigator.clipboard.writeText(t.text)}
+                    title="Click to copy"
+                    style={{
+                      fontSize: 10, color: "#5f6368", padding: "3px 0",
+                      cursor: "pointer", display: "flex", gap: 4,
+                    }}
+                  >
+                    <span style={{ color: "#9334e6", fontWeight: 700, fontSize: 9 }}>{t.step}.</span>
+                    <span style={{ fontStyle: "italic" }}>{t.text}</span>
+                  </div>
+                ))}
                 <button
                   onClick={fetchCausalLogs}
                   style={{

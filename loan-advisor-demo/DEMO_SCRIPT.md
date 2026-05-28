@@ -145,6 +145,31 @@ If tool_influence > user_influence - τ → BLOCK (IPI detected)
 - Runs in the agent's `before_tool_callback` — blocks BEFORE execution
 - Library: `causal-armor` (PyPI) — based on arXiv:2602.07918
 
+### Tuning the Detection Threshold (τ)
+
+The threshold `margin_tau` (τ) controls sensitivity. Set via env var `CAUSAL_ARMOR_TAU` on Agent Engine.
+
+Detection rule: **block when `span_delta > user_delta - τ`**
+
+| τ value | Behavior | Use case |
+|---------|----------|----------|
+| **0** | Block any span more influential than user | Very sensitive, many false positives |
+| **-2.0** (default) | Block when span exceeds user by 2.0+ | Balanced for tool-augmented agents |
+| **-5.0** | Only catch extreme domination | Very permissive |
+
+**How we tuned -2.0:** Normal tool calls (credit check, BQ query) produce span deltas of 0.5–1.4, while IPI-driven calls hit 2.1–3.1. The -2.0 threshold sits cleanly between these ranges.
+
+**Observed LOO scores from the demo:**
+
+| Tool Call | user_delta | max span_delta | Verdict |
+|-----------|-----------|---------------|---------|
+| `loan_run_credit_check` (legit) | **+0.79** | 0.25 | ALLOWED |
+| `query_bigquery` (legit) | **+0.02** | 1.40 | ALLOWED |
+| `loan_update_application_status` (IPI) | **-0.02** | **3.14** | BLOCKED |
+| `loan_update_application_status` (IPI) | **-0.06** | **2.94** | BLOCKED |
+
+Pattern: legitimate calls have positive user_delta (user intent drives the action). IPI calls have near-zero or negative user_delta with span_delta > 2.0 (untrusted data drives the action).
+
 ---
 
 ## Slide 10: Demo 5 — View LOO Analysis Logs

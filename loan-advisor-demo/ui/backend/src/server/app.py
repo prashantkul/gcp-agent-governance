@@ -217,6 +217,7 @@ def create_app(config: ServerConfig = None) -> FastAPI:
                 f'AND textPayload:"CAUSAL ARMOR"'
             )
             entries = list(client.list_entries(filter_=filter_str, max_results=20, order_by="timestamp desc"))
+            entries.sort(key=lambda e: e.timestamp, reverse=True)
             logs = []
             for entry in entries:
                 text = entry.payload
