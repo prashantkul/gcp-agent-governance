@@ -339,6 +339,7 @@ _ca_provider = None
 
 async def _causal_armor_before_tool(tool, args, tool_context):
     """Block tool execution if LOO analysis detects indirect prompt injection."""
+    import logging as _logging
     if not CAUSAL_ARMOR_VLLM_URL:
         return None
 
@@ -407,7 +408,7 @@ async def _causal_armor_before_tool(tool, args, tool_context):
 
         if detection.is_attack_detected:
             flagged = ", ".join(detection.flagged_spans)
-            print(f"[CAUSAL ARMOR] BLOCKED {tool_name}: flagged spans [{flagged}], "
+            _logging.warning(f"[CAUSAL ARMOR] BLOCKED {tool_name}: flagged spans [{flagged}], "
                   f"user_delta={attribution.delta_user_normalized:.4f}, "
                   f"span_deltas={attribution.span_attributions_normalized}")
             return {
@@ -424,11 +425,16 @@ async def _causal_armor_before_tool(tool, args, tool_context):
                 },
             }
         else:
-            print(f"[CAUSAL ARMOR] ALLOWED {tool_name}: "
+            _logging.warning(f"[CAUSAL ARMOR] ALLOWED {tool_name}: "
                   f"user_delta={attribution.delta_user_normalized:.4f}, "
                   f"span_deltas={attribution.span_attributions_normalized}")
     except Exception as e:
-        print(f"[CAUSAL ARMOR] Analysis error for {tool_name}: {e}")
+        _logging.warning(f"[CAUSAL ARMOR] BLOCKED {tool_name} (fail-closed): {e}")
+        return {
+            "error": f"Causal Armor blocked this tool call (fail-closed). "
+                     f"The LOO proxy was unreachable — blocking by default for safety.",
+            "causal_armor": {"verdict": "BLOCKED_FAIL_CLOSED"},
+        }
 
     return None
 

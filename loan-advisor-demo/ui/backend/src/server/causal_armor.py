@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 VLLM_BASE_URL = os.environ.get(
     "CAUSAL_ARMOR_VLLM_URL",
-    "https://causal-armor-proxy-pjkozck2ga-uc.a.run.app",
+    "http://35.253.140.196:8000",
 )
 VLLM_MODEL = os.environ.get("CAUSAL_ARMOR_MODEL", "google/gemma-2-2b-it")
 

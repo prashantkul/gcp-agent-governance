@@ -214,13 +214,13 @@ def create_app(config: ServerConfig = None) -> FastAPI:
             filter_str = (
                 f'resource.type="aiplatform.googleapis.com/ReasoningEngine" '
                 f'AND resource.labels.reasoning_engine_id="{agent_id}" '
-                f'AND textPayload:"CAUSAL ARMOR"'
+                f'AND (textPayload:"CAUSAL ARMOR" OR jsonPayload.message:"CAUSAL ARMOR")'
             )
             entries = list(client.list_entries(filter_=filter_str, max_results=20, order_by="timestamp desc"))
             entries.sort(key=lambda e: e.timestamp, reverse=True)
             logs = []
             for entry in entries:
-                text = entry.payload
+                text = entry.payload if isinstance(entry.payload, str) else entry.payload.get("message", str(entry.payload))
                 parsed = {"raw": text, "timestamp": entry.timestamp.isoformat()}
                 if "[CAUSAL ARMOR] BLOCKED" in text:
                     parsed["action"] = "BLOCKED"
