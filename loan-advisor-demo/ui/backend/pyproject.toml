@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.116.1",
     "google-adk[agent-identity]>=2.0.0",
     "google-cloud-iamconnectorcredentials>=0.1.0",
+    "google-cloud-logging>=3.0.0",
     "google-genai>=1.0.0",
     "mcp>=1.27.0",
     "httpx>=0.28.0",

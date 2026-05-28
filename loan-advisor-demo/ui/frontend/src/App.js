@@ -130,6 +130,8 @@ function App() {
   const [armorRequest, setArmorRequest] = useState(false);
   const [armorResponse, setArmorResponse] = useState(false);
   const [causalArmor, setCausalArmor] = useState(false);
+  const [causalLogs, setCausalLogs] = useState([]);
+  const [showCausalLogs, setShowCausalLogs] = useState(false);
   const [users, setUsers] = useState([]);
   const [activeUser, setActiveUser] = useState("");
 
@@ -175,6 +177,15 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled: value }),
       });
+    } catch (e) { /* ignore */ }
+  }, []);
+
+  const fetchCausalLogs = useCallback(async () => {
+    try {
+      const resp = await fetch(`${BACKEND_URL}/causal-armor/logs`);
+      const d = await resp.json();
+      setCausalLogs(d.logs || []);
+      setShowCausalLogs(true);
     } catch (e) { /* ignore */ }
   }, []);
 
@@ -533,8 +544,79 @@ function App() {
                     }} />
                   </label>
                 </div>
+                <button
+                  onClick={fetchCausalLogs}
+                  style={{
+                    width: "100%", marginTop: 6, padding: "6px 0",
+                    borderRadius: 8, border: "1px solid #e0d4f5",
+                    background: "#f3e8ff", color: "#7c3aed",
+                    fontSize: 11, fontWeight: 600, cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  View LOO Analysis Logs
+                </button>
               </div>
             </div>
+
+            {/* Causal Armor Log Panel */}
+            {showCausalLogs && (
+              <div style={{
+                margin: "0 16px 12px", padding: 12, borderRadius: 12,
+                background: "#faf5ff", border: "1px solid #e0d4f5",
+                maxHeight: 300, overflowY: "auto",
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: "#7c3aed", textTransform: "uppercase", letterSpacing: 1.5 }}>
+                    LOO Analysis Log
+                  </div>
+                  <span
+                    className="material-icons-outlined"
+                    style={{ fontSize: 14, color: "#9aa0a6", cursor: "pointer" }}
+                    onClick={() => setShowCausalLogs(false)}
+                  >close</span>
+                </div>
+                {causalLogs.length === 0 && (
+                  <div style={{ fontSize: 11, color: "#5f6368", fontStyle: "italic" }}>No Causal Armor events found.</div>
+                )}
+                {causalLogs.map((log, i) => (
+                  <div key={i} style={{
+                    padding: "8px 10px", marginBottom: 6, borderRadius: 8,
+                    background: log.action === "BLOCKED" ? "#fef2f2" : "#f0fdf4",
+                    border: `1px solid ${log.action === "BLOCKED" ? "#fecaca" : "#bbf7d0"}`,
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                      <span style={{
+                        fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 4,
+                        background: log.action === "BLOCKED" ? "#dc2626" : "#16a34a",
+                        color: "#fff", textTransform: "uppercase", letterSpacing: 0.5,
+                      }}>{log.action}</span>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: "#1f1f1f", fontFamily: "var(--font-mono)" }}>
+                        {log.tool}
+                      </span>
+                      <span style={{ fontSize: 9, color: "#9aa0a6", marginLeft: "auto" }}>
+                        {log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : ""}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 10, color: "#444746", fontFamily: "var(--font-mono)" }}>
+                      <span style={{ color: "#5f6368" }}>user_delta:</span>{" "}
+                      <span style={{ fontWeight: 600 }}>{log.user_delta?.toFixed(4) ?? "N/A"}</span>
+                      {log.span_deltas && Object.entries(log.span_deltas).map(([k, v]) => (
+                        <span key={k}>
+                          {" | "}<span style={{ color: "#5f6368" }}>{k.split(":")[0]}:</span>{" "}
+                          <span style={{ fontWeight: 600, color: v > 2 ? "#dc2626" : "#1f1f1f" }}>{v.toFixed(4)}</span>
+                        </span>
+                      ))}
+                    </div>
+                    {log.flagged_spans && (
+                      <div style={{ fontSize: 10, color: "#dc2626", marginTop: 2 }}>
+                        Flagged: {log.flagged_spans}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Footer */}
