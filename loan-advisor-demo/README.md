@@ -132,11 +132,16 @@ loan-advisor-demo/
 │   ├── requirements.txt        # Cloud deploy dependencies
 │   └── app_utils/              # Telemetry, typing helpers
 ├── deploy.py                   # Python SDK deploy script (Agent Identity)
+├── deploy-cloudrun.sh          # Cloud Run deploy script (UI + backend)
 ├── ui/
+│   ├── Dockerfile              # Multi-stage: React build → Node.js runtime
 │   ├── frontend/               # React + CopilotKit chat UI
-│   ├── runtime/                # CopilotKit Node.js runtime bridge
-│   └── backend/                # AG-UI FastAPI proxy to Agent Engine
+│   ├── runtime/                # CopilotKit runtime + Express proxy
+│   └── backend/
+│       ├── Dockerfile          # Python FastAPI container
+│       └── src/server/         # AG-UI proxy, Model Armor, auth
 ├── mcp_server/                 # Custom MCP server (loan tools)
+├── data/loan_documents/        # Demo PDFs with prompt injection examples
 └── .env                        # Environment configuration
 ```
 
@@ -213,6 +218,101 @@ cd ui/frontend && npm install && npm start
 ### 5. Open the demo
 
 Navigate to http://localhost:3000
+
+## Cloud Run Deployment
+
+The UI stack can be deployed to Cloud Run as two services:
+
+```
+┌─────────────────────────────────────────────┐
+│  loan-advisor-ui (Cloud Run)                │
+│  Node.js Express                            │
+│                                             │
+│  /                    → React static build  │
+│  /api/copilotkit      → CopilotKit runtime  │
+│  /agent, /users, ...  → proxy to backend ──────┐
+│  /commit              → proxy (OAuth redir) │   │
+└─────────────────────────────────────────────┘   │
+                                                  │
+┌─────────────────────────────────────────────┐   │
+│  loan-advisor-backend (Cloud Run)           │◀──┘
+│  Python FastAPI                             │
+│                                             │
+│  SSE proxy → Agent Engine                   │
+│  Model Armor sanitize API                   │
+│  OAuth /commit finalize                     │
+│  User & config state                        │
+└──────────────┬──────────────────────────────┘
+               │
+               ▼
+        Agent Engine (Vertex AI)
+```
+
+The Express server proxies backend API routes via `http-proxy-middleware`, so the React app uses **relative URLs** — no CORS issues between services.
+
+### Deploy with the script
+
+```bash
+# From the repo root
+./deploy-cloudrun.sh
+```
+
+This runs two `gcloud run deploy --source` commands sequentially:
+1. Builds and deploys **loan-advisor-backend** from `ui/backend/Dockerfile`
+2. Builds and deploys **loan-advisor-ui** from `ui/Dockerfile` (multi-stage: React build → Node.js runtime), passing the backend URL as `AG_UI_BACKEND_URL`
+
+### Post-deploy steps
+
+**1. Grant Model Armor access to the Cloud Run service account:**
+
+```bash
+gcloud projects add-iam-policy-binding <PROJECT_ID> \
+  --member="serviceAccount:<PROJECT_NUMBER>-compute@developer.gserviceaccount.com" \
+  --role="roles/modelarmor.user"
+```
+
+**2. Update the agent's OAuth callback URI:**
+
+Edit `.env` to point `CONTINUE_URI` to the Cloud Run UI URL:
+
+```
+CONTINUE_URI=https://loan-advisor-ui-<PROJECT_NUMBER>.<REGION>.run.app/commit
+```
+
+Then redeploy the agent:
+
+```bash
+uv run python deploy.py
+```
+
+**3. Update the OAuth authorized redirect URI** in the Google Cloud Console OAuth client to include:
+
+```
+https://loan-advisor-ui-<PROJECT_NUMBER>.<REGION>.run.app/commit
+```
+
+### Environment variables
+
+| Service | Variable | Description |
+|---------|----------|-------------|
+| **UI** | `AG_UI_BACKEND_URL` | Backend Cloud Run URL (set by deploy script) |
+| **UI** | `AGENT_NAME` | Agent name for CopilotKit (default: `loan_advisor`) |
+| **UI** | `PORT` | Listening port (Cloud Run sets this to `8080`) |
+| **Backend** | `PORT` | Listening port (Cloud Run sets this to `8080`) |
+| **Backend** | `CORS_ORIGINS` | Allowed CORS origins (default: `*`) |
+| **Backend** | `AGENT_ENGINE_ID` | Full Agent Engine resource name |
+| **Backend** | `MODEL_ARMOR_TEMPLATE` | Model Armor template resource name |
+
+### Local development after Cloud Run changes
+
+The frontend now uses configurable URLs via `REACT_APP_*` env vars. For local development, these are set automatically by `ui/frontend/.env.development`:
+
+```
+REACT_APP_BACKEND_URL=http://localhost:8888
+REACT_APP_COPILOT_RUNTIME_URL=http://localhost:4002/api/copilotkit
+```
+
+When building for Cloud Run (no `.env.development`), these default to empty/relative — all requests go through the Express proxy on the same origin.
 
 ## Key Technical Decisions
 

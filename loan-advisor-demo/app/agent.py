@@ -332,9 +332,117 @@ if BQ_AUTH_RESOURCE_NAME:
     agent_tools.append(bq_tool)
 
 
+CAUSAL_ARMOR_VLLM_URL = os.environ.get("CAUSAL_ARMOR_VLLM_URL", "")
+
+_ca_provider = None
+
+
+async def _causal_armor_before_tool(tool, args, tool_context):
+    """Block tool execution if LOO analysis detects indirect prompt injection."""
+    import logging as _logging
+    if not CAUSAL_ARMOR_VLLM_URL:
+        return None
+
+    from causal_armor import (
+        Message as CAMessage,
+        MessageRole as CARole,
+        ToolCall as CAToolCall,
+        build_structured_context,
+        compute_attribution,
+        detect_dominant_spans,
+    )
+    from causal_armor.providers.vllm import VLLMProxyProvider
+
+    global _ca_provider
+    if _ca_provider is None:
+        _ca_provider = VLLMProxyProvider(
+            base_url=CAUSAL_ARMOR_VLLM_URL,
+            model=os.environ.get("CAUSAL_ARMOR_MODEL", "google/gemma-2-2b-it"),
+            timeout=60.0,
+        )
+
+    tool_name = getattr(tool, "name", str(tool))
+    untrusted_tools: set[str] = set()
+    messages: list[CAMessage] = []
+
+    current_inv = tool_context.invocation_id
+    recent_invocations = set()
+    for event in reversed(tool_context.session.events):
+        recent_invocations.add(event.invocation_id)
+        if len(recent_invocations) > 2:
+            break
+
+    for event in tool_context.session.events:
+        if event.invocation_id not in recent_invocations:
+            continue
+        if not event.content or not event.content.parts:
+            continue
+        for part in event.content.parts:
+            if event.author == "user" and part.text:
+                messages.append(CAMessage(role=CARole.USER, content=part.text))
+            elif hasattr(part, "function_response") and part.function_response:
+                fr = part.function_response
+                resp_text = str(fr.response) if fr.response else ""
+                messages.append(CAMessage(
+                    role=CARole.TOOL,
+                    content=resp_text[:2000],
+                    tool_name=fr.name,
+                ))
+                untrusted_tools.add(fr.name)
+
+    if not untrusted_tools:
+        return None
+
+    action_text = f"I will call {tool_name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"
+    messages.append(CAMessage(role=CARole.ASSISTANT, content=action_text))
+
+    try:
+        ctx = build_structured_context(
+            messages=messages,
+            untrusted_tool_names=frozenset(untrusted_tools),
+        )
+        action = CAToolCall(name=tool_name, arguments=args, raw_text=action_text)
+        margin_tau = float(os.environ.get("CAUSAL_ARMOR_TAU", "-2.0"))
+        attribution = await compute_attribution(ctx=ctx, action=action, proxy=_ca_provider)
+        detection = detect_dominant_spans(attribution, margin_tau=margin_tau)
+
+        if detection.is_attack_detected:
+            flagged = ", ".join(detection.flagged_spans)
+            _logging.warning(f"[CAUSAL ARMOR] BLOCKED {tool_name}: flagged spans [{flagged}], "
+                  f"user_delta={attribution.delta_user_normalized:.4f}, "
+                  f"span_deltas={attribution.span_attributions_normalized}")
+            return {
+                "error": f"Causal Armor blocked this tool call. "
+                         f"Untrusted data from [{flagged}] dominates the action — "
+                         f"possible indirect prompt injection detected.",
+                "causal_armor": {
+                    "verdict": "BLOCKED",
+                    "flagged_spans": list(detection.flagged_spans),
+                    "user_influence": round(attribution.delta_user_normalized, 4),
+                    "span_influences": {
+                        k: round(v, 4) for k, v in attribution.span_attributions_normalized.items()
+                    },
+                },
+            }
+        else:
+            _logging.warning(f"[CAUSAL ARMOR] ALLOWED {tool_name}: "
+                  f"user_delta={attribution.delta_user_normalized:.4f}, "
+                  f"span_deltas={attribution.span_attributions_normalized}")
+    except Exception as e:
+        _logging.warning(f"[CAUSAL ARMOR] BLOCKED {tool_name} (fail-closed): {e}")
+        return {
+            "error": f"Causal Armor blocked this tool call (fail-closed). "
+                     f"The LOO proxy was unreachable — blocking by default for safety.",
+            "causal_armor": {"verdict": "BLOCKED_FAIL_CLOSED"},
+        }
+
+    return None
+
+
 root_agent = Agent(
     name="loan_advisor",
     model="gemini-2.5-flash",
+    before_tool_callback=_causal_armor_before_tool if CAUSAL_ARMOR_VLLM_URL else None,
     description=(
         "Acme Financial Services Loan Advisor — "
         "helps customers check loan eligibility, estimate rates, "

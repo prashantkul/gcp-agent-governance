@@ -9,11 +9,12 @@
     "start": "node src/index.js"
   },
   "dependencies": {
-    "@copilotkit/runtime": "^1.9.3",
     "@ag-ui/client": "^0.0.53",
+    "@copilotkit/runtime": "^1.9.3",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
-    "express": "^4.21.0"
+    "express": "^4.21.0",
+    "http-proxy-middleware": "^3.0.5"
   },
   "engines": {
     "node": ">=18.0.0"
